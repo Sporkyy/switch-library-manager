@@ -319,9 +319,9 @@ func copyOrganizationFile(move OrganizationMove, operations organizationFileOper
 	return nil
 }
 
-// verifyExclusiveDestination confirms that the closed destination path is
-// still the copy this move wrote. SMB clients do not always report stable file
-// IDs, so a matching size and preserved modification time also identify it.
+// verifyExclusiveDestination requires the closed destination path to identify
+// the file this move created. Matching size and modification time cannot prove
+// identity when another client replaces the destination or file IDs are unstable.
 func verifyExclusiveDestination(move OrganizationMove, created, source os.FileInfo, lstat func(string) (os.FileInfo, error)) error {
 	current, err := lstat(move.Destination)
 	if err != nil {
@@ -330,17 +330,12 @@ func verifyExclusiveDestination(move OrganizationMove, created, source os.FileIn
 	if !current.Mode().IsRegular() || current.Size() != source.Size() {
 		return fmt.Errorf("exclusive destination %q changed during copy; source was retained", move.Destination)
 	}
-	timeMatches := modTimesWithin(current.ModTime(), source.ModTime(), exclusiveDestinationTimeTolerance)
-	if os.SameFile(created, current) {
-		if !timeMatches {
-			zap.S().Warnw("Destination modification time changed after close", "destination", move.Destination, "want", source.ModTime(), "got", current.ModTime())
-		}
-		return nil
+	if !os.SameFile(created, current) {
+		return fmt.Errorf("exclusive destination %q changed during copy or its identity could not be verified; source %q was retained", move.Destination, move.Source)
 	}
-	if !timeMatches {
-		return fmt.Errorf("exclusive destination %q changed during copy; source was retained", move.Destination)
+	if !modTimesWithin(current.ModTime(), source.ModTime(), exclusiveDestinationTimeTolerance) {
+		zap.S().Warnw("Destination modification time changed after close", "destination", move.Destination, "want", source.ModTime(), "got", current.ModTime())
 	}
-	zap.S().Infow("Destination file identity differs after close; accepted matching size and modification time", "destination", move.Destination)
 	return nil
 }
 

@@ -384,16 +384,67 @@ type unstableIdentityInfo struct{ os.FileInfo }
 
 func (unstableIdentityInfo) Sys() any { return nil }
 
-func TestUnsupportedRenameAcceptsDestinationWithUnstableIdentity(t *testing.T) {
+func TestUnsupportedRenameRetainsSourceWhenReplacementMetadataMatches(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("replacing an open destination requires Unix file-handle semantics")
+	}
+	root := t.TempDir()
+	source := filepath.Join(root, "source.nsp")
+	destination := filepath.Join(root, "renamed.nsp")
+	writeFixture(t, source, "original content")
+	stamp := time.Date(2020, 2, 3, 4, 5, 6, 0, time.UTC)
+	if err := os.Chtimes(source, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	move := organizationMoveForTest(t, source, destination)
+	operations := unsupportedRenameTestOperations()
+	create := operations.createExclusive
+	operations.createExclusive = func(path string) (organizationTemporaryFile, error) {
+		file, err := create(path)
+		if err != nil {
+			return nil, err
+		}
+		return unsupportedCopyHookFile{organizationTemporaryFile: file, afterSync: func() error {
+			// The copy's handle remains open, but its bytes disappear on close
+			// after another client unlinks it and supplies a different file.
+			if err := os.Remove(path); err != nil {
+				return err
+			}
+			if err := os.WriteFile(path, []byte("replaced content"), 0600); err != nil {
+				return err
+			}
+			return os.Chtimes(path, stamp, stamp)
+		}}, nil
+	}
+	err := moveFileWithOperations(move, operations)
+	if err == nil {
+		t.Error("move accepted a replacement with matching size and modification time")
+	} else {
+		for _, detail := range []string{source, destination, "identity", "was retained"} {
+			if !strings.Contains(err.Error(), detail) {
+				t.Errorf("move error = %v, want detail %q", err, detail)
+			}
+		}
+	}
+	assertUnsupportedTestContents(t, source, "original content")
+	assertUnsupportedTestContents(t, destination, "replaced content")
+	info, err := os.Stat(destination)
+	if err != nil || !info.ModTime().Equal(stamp) {
+		t.Fatalf("replacement modification time changed: info=%v error=%v", info, err)
+	}
+}
+
+func TestUnsupportedRenameRetainsSourceWithUnstableIdentity(t *testing.T) {
 	root := t.TempDir()
 	source := filepath.Join(root, "source.nsp")
 	destination := filepath.Join(root, "renamed.nsp")
 	writeFixture(t, source, "synthetic unstable identity content")
 	operations := identityChangingOperations(destination, unsupportedRenameTestOperations())
-	if err := moveFileWithOperations(organizationMoveForTest(t, source, destination), operations); err != nil {
-		t.Fatal(err)
+	err := moveFileWithOperations(organizationMoveForTest(t, source, destination), operations)
+	if err == nil || !strings.Contains(err.Error(), "was retained") {
+		t.Errorf("move error = %v, want unverifiable destination retained", err)
 	}
-	assertNotExists(t, source)
+	assertUnsupportedTestContents(t, source, "synthetic unstable identity content")
 	assertUnsupportedTestContents(t, destination, "synthetic unstable identity content")
 }
 
