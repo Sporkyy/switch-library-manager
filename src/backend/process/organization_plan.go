@@ -191,6 +191,14 @@ func BuildOrganizationPlan(
 	}
 
 	validateOrganizationPlan(&plan)
+	zap.L().Info("Organization plan built",
+		zap.String("library_root", baseFolder),
+		zap.Int("planned_moves", len(plan.Moves)),
+		zap.Int("conflicts", len(plan.Conflicts)),
+		zap.Bool("rename_files", options.RenameFiles),
+		zap.Bool("create_folder_per_game", options.CreateFolderPerGame),
+		zap.Bool("move_scan_files_to_library", options.MoveScanFilesToLibrary),
+	)
 	return plan, nil
 }
 
@@ -465,7 +473,18 @@ func resolveOrganizationPath(path string) (string, error) {
 // ExecuteOrganizationPlan applies a previously validated plan and refuses to
 // replace destinations that appear after preflight. Empty-folder cleanup runs
 // inside baseFolder only; scanFolders nested inside it are kept.
-func ExecuteOrganizationPlan(plan OrganizationPlan, localDB *db.LocalSwitchFilesDB, baseFolder string, options settings.OrganizeOptions, progress db.ProgressUpdater, scanFolders ...string) error {
+func ExecuteOrganizationPlan(plan OrganizationPlan, localDB *db.LocalSwitchFilesDB, baseFolder string, options settings.OrganizeOptions, progress db.ProgressUpdater, scanFolders ...string) (retErr error) {
+	completed := 0
+	defer func() {
+		if retErr != nil {
+			zap.L().Error("Organization failed",
+				zap.String("library_root", baseFolder),
+				zap.Int("completed_moves", completed),
+				zap.Int("planned_moves", len(plan.Moves)),
+				zap.Error(retErr),
+			)
+		}
+	}()
 	if len(plan.Conflicts) > 0 {
 		return &OrganizationConflictsError{Conflicts: plan.Conflicts}
 	}
@@ -489,6 +508,7 @@ func ExecuteOrganizationPlan(plan OrganizationPlan, localDB *db.LocalSwitchFiles
 		if err := moveOrganizationFile(move); err != nil {
 			return fmt.Errorf("move %q to %q: %w", move.Source, move.Destination, err)
 		}
+		completed++
 		if err := updateLocalFilePaths(localDB, move.Source, move.Destination); err != nil {
 			return err
 		}

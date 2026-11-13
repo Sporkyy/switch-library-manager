@@ -2,6 +2,7 @@ package process
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ type testTemporaryFile struct {
 	chmodErr error
 	syncErr  error
 	closeErr error
+	statErr  error
 }
 
 type testSourceFile struct {
@@ -59,6 +61,13 @@ func (f testTemporaryFile) Write(data []byte) (int, error) {
 }
 
 func (f testTemporaryFile) Name() string { return f.file.Name() }
+func (f testTemporaryFile) Fd() uintptr  { return f.file.Fd() }
+func (f testTemporaryFile) Stat() (os.FileInfo, error) {
+	if f.statErr != nil {
+		return nil, f.statErr
+	}
+	return f.file.Stat()
+}
 func (f testTemporaryFile) Chmod(mode os.FileMode) error {
 	if f.chmodErr != nil {
 		return f.chmodErr
@@ -345,6 +354,9 @@ func TestMoveFileCrossFilesystemFallbackRetainsSourceOnFailure(t *testing.T) {
 					if filepath.Clean(from) == filepath.Clean(source) {
 						return crossDeviceTestError
 					}
+					if !strings.HasPrefix(filepath.Base(from), ".slm-move-") {
+						return defaultRename(from, to)
+					}
 					changed := time.Now().Add(time.Minute)
 					if err := os.Chtimes(source, changed, changed); err != nil {
 						return err
@@ -437,4 +449,39 @@ func organizationMoveForTest(t *testing.T, source, destination string) Organizat
 		t.Fatal(err)
 	}
 	return OrganizationMove{Source: source, Destination: destination, SourceSize: info.Size(), SourceStamp: info}
+}
+
+func TestMoveFileUnsupportedRenameCopiesWithoutReplacing(t *testing.T) {
+	for _, crossDevice := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cross_device_%t", crossDevice), func(t *testing.T) {
+			root := t.TempDir()
+			source := filepath.Join(root, "source.nsp")
+			destination := filepath.Join(root, "renamed.nsp")
+			writeFixture(t, source, "synthetic unsupported rename content")
+			move := organizationMoveForTest(t, source, destination)
+			ops := defaultOrganizationFileOperations()
+			if crossDevice {
+				ops = crossDeviceTestOperations(source)
+			}
+			rename := ops.renameNoReplace
+			ops.renameNoReplace = func(from, to string) error {
+				if crossDevice && from == source {
+					return rename(from, to)
+				}
+				return fmt.Errorf("exclusive rename unavailable: %w", errors.ErrUnsupported)
+			}
+			if err := moveFileWithOperations(move, ops); err != nil {
+				t.Fatal(err)
+			}
+			assertNotExists(t, source)
+			content, err := os.ReadFile(destination)
+			if err != nil || string(content) != "synthetic unsupported rename content" {
+				t.Fatalf("destination = %q, error = %v", content, err)
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("directory after move = %v, error = %v", entries, err)
+			}
+		})
+	}
 }
