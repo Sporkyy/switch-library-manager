@@ -2,6 +2,7 @@ package settings
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -664,5 +665,19 @@ func TestKeyFilePathCaseAndReadSettingsSingleton(t *testing.T) {
 	got, err := ReadSettings(other)
 	if err != nil || got != settingsInstance {
 		t.Fatal("settings singleton was not retained")
+	}
+}
+
+func TestSwitchKeysFormattingRedactsValues(t *testing.T) {
+	keys := &switchKeys{keys: map[string]string{"header_key": "synthetic-secret-value"}}
+	for _, format := range []string{"%v", "%s", "%+v", "%#v"} {
+		got := fmt.Sprintf(format, keys)
+		if strings.Contains(got, "synthetic-secret-value") || strings.Contains(got, "header_key") {
+			t.Errorf("fmt %s leaked key material: %q", format, got)
+		}
+	}
+	var missing *switchKeys
+	if got := fmt.Sprintf("%v", missing); got != "switchKeys(nil)" {
+		t.Errorf("nil keys formatted as %q", got)
 	}
 }

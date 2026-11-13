@@ -286,17 +286,26 @@ func TestOrganizationPathWithinRejectsSiblingPrefix(t *testing.T) {
 
 func TestResolveOrganizationPathNormalizesExistingAndMissingPaths(t *testing.T) {
 	root := t.TempDir()
-	for _, path := range []string{root, filepath.Join(root, "missing", "folder")} {
-		got, err := resolveOrganizationPath(path)
+	// The temporary directory can itself sit behind a symbolic link (macOS
+	// /var -> /private/var), which resolveOrganizationPath resolves.
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolvedRoot, err = filepath.Abs(resolvedRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct{ path, want string }{
+		{root, resolvedRoot},
+		{filepath.Join(root, "missing", "folder"), filepath.Join(resolvedRoot, "missing", "folder")},
+	} {
+		got, err := resolveOrganizationPath(test.path)
 		if err != nil {
-			t.Fatalf("resolveOrganizationPath(%q): %v", path, err)
+			t.Fatalf("resolveOrganizationPath(%q): %v", test.path, err)
 		}
-		want, err := filepath.Abs(filepath.Clean(path))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got != filepath.Clean(want) {
-			t.Errorf("resolveOrganizationPath(%q) = %q, want %q", path, got, filepath.Clean(want))
+		if got != filepath.Clean(test.want) {
+			t.Errorf("resolveOrganizationPath(%q) = %q, want %q", test.path, got, filepath.Clean(test.want))
 		}
 	}
 	if _, err := resolveOrganizationPath("invalid\x00path"); err == nil {

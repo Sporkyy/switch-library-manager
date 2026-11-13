@@ -2,6 +2,7 @@ package settings
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,18 @@ var (
 type switchKeys struct {
 	keys map[string]string
 }
+
+// String keeps key material out of logs and error messages that format a key
+// set with %v or %s; only the number of loaded keys is shown.
+func (k *switchKeys) String() string {
+	if k == nil {
+		return "switchKeys(nil)"
+	}
+	return fmt.Sprintf("switchKeys(%d keys, values redacted)", len(k.keys))
+}
+
+// GoString applies the same redaction to %#v.
+func (k *switchKeys) GoString() string { return k.String() }
 
 func (k *switchKeys) GetKey(keyName string) string {
 	return k.keys[keyName]
