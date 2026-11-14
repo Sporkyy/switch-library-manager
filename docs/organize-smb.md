@@ -77,6 +77,8 @@ findmnt --target '/actual/intake/path' --output TARGET,SOURCE,FSTYPE,OPTIONS
 
 ## Scratch application test
 
+The current cross-platform procedure, including the file-ID stability probe, is in [testing.md](testing.md).
+
 From `src`, run the backend application test with existing parent directories on the desired mounts:
 
 ```sh
@@ -109,5 +111,7 @@ Full `go test ./...` and `go test -race ./...` passed, as did `go vet ./...`, `g
 sandbox-exec -p '(version 1)(allow default)(deny file-read* (subpath "/Users/todd/.switch"))' \
     env TMPDIR=/private/tmp go test ./...
 ```
+
+These workarounds are no longer needed: test packages now redirect `HOME`, `USERPROFILE` and `XDG_CONFIG_HOME` to a temporary directory (`src/internal/testhome`), and the path expectation resolves symlinks.
 
 The same isolation was used for the race and aggregate core-coverage runs. Combined core statement coverage was **92.2%**, above the required 90%. Focused regressions cover unsupported rename/publication, late collisions, existing files/symlinks/directories, copy/flush/close/metadata failures, changing sources, and replacement of the destination while its original handle remains open. Cross-compilation does not establish Linux runtime behavior; the CachyOS mount type, actual move count, and original error remain unverified.
