@@ -75,7 +75,7 @@ func TestUnsupportedRenamePreservesDestinationCollisions(t *testing.T) {
 }
 
 func TestUnsupportedRenameFailuresRetainSourceAndReportDestination(t *testing.T) {
-	for _, failure := range []string{"source read", "destination write", "destination chmod", "destination sync", "destination close", "destination stat", "destination chtimes"} {
+	for _, failure := range []string{"source read", "destination write", "destination chmod", "destination sync", "destination close", "destination stat", "destination chtimes", "destination time-preserving close"} {
 		t.Run(failure, func(t *testing.T) {
 			root := t.TempDir()
 			source := filepath.Join(root, "source.nsp")
@@ -95,6 +95,10 @@ func TestUnsupportedRenameFailuresRetainSourceAndReportDestination(t *testing.T)
 				}
 			} else if failure == "destination chtimes" {
 				operations.chtimesOpen = func(organizationTemporaryFile, time.Time, time.Time) error { return injected }
+			} else if failure == "destination time-preserving close" {
+				operations.closeExclusive = func(file organizationTemporaryFile, _ os.FileInfo, _, _ time.Time) error {
+					return errors.Join(file.Close(), injected)
+				}
 			} else {
 				create := operations.createExclusive
 				operations.createExclusive = func(path string) (organizationTemporaryFile, error) {
@@ -432,6 +436,38 @@ func TestUnsupportedRenameRetainsSourceWhenReplacementMetadataMatches(t *testing
 	if err != nil || !info.ModTime().Equal(stamp) {
 		t.Fatalf("replacement modification time changed: info=%v error=%v", info, err)
 	}
+}
+
+func TestUnsupportedRenameClosesDestinationPreservingSourceTimes(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source.nsp")
+	destination := filepath.Join(root, "renamed.nsp")
+	writeFixture(t, source, "synthetic close content")
+	wantTime := time.Date(2020, 2, 3, 4, 5, 6, 0, time.UTC)
+	if err := os.Chtimes(source, wantTime, wantTime); err != nil {
+		t.Fatal(err)
+	}
+	operations := unsupportedRenameTestOperations()
+	calls := 0
+	closeExclusive := operations.closeExclusive
+	operations.closeExclusive = func(file organizationTemporaryFile, created os.FileInfo, atime, mtime time.Time) error {
+		calls++
+		if filepath.Clean(file.Name()) != filepath.Clean(destination) || !mtime.Equal(wantTime) || !atime.Equal(wantTime) {
+			t.Errorf("closeExclusive(%q, atime %v, mtime %v), want destination with source times %v", file.Name(), atime, mtime, wantTime)
+		}
+		if current, err := file.Stat(); err != nil || !os.SameFile(created, current) {
+			t.Errorf("closeExclusive created identity does not match the open destination: error %v", err)
+		}
+		return closeExclusive(file, created, atime, mtime)
+	}
+	if err := moveFileWithOperations(organizationMoveForTest(t, source, destination), operations); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("closeExclusive calls = %d, want 1", calls)
+	}
+	assertNotExists(t, source)
+	assertUnsupportedTestContents(t, destination, "synthetic close content")
 }
 
 func TestUnsupportedRenameRetainsSourceWithUnstableIdentity(t *testing.T) {

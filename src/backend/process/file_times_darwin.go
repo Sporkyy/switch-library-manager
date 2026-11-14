@@ -3,6 +3,7 @@
 package process
 
 import (
+	"os"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -15,4 +16,10 @@ func setOrganizationOpenFileTimes(file organizationTemporaryFile, atime, mtime t
 		unix.NsecToTimeval(atime.UnixNano()),
 		unix.NsecToTimeval(mtime.UnixNano()),
 	})
+}
+
+// closeExclusiveOrganizationCopy only closes here: the deferred SMB close that
+// replaces preserved times is specific to the Linux CIFS client.
+func closeExclusiveOrganizationCopy(file organizationTemporaryFile, _ os.FileInfo, _, _ time.Time) error {
+	return file.Close()
 }

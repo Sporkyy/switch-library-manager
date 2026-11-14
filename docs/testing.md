@@ -167,6 +167,13 @@ There are four scenarios:
 Each root left unset defaults to a local temp directory. Running with no
 variables at all is therefore a local-disk test.
 
+On a real mount the test waits 2.5 seconds before backdating each fixture and
+again before checking the destination, so each scenario takes about 7 seconds.
+The waits outlast the Linux CIFS deferred close (`closetimeo`) and attribute
+cache (`actimeo`), so the check sees the time the server keeps. On Linux the
+check reads it with `statx(AT_STATX_FORCE_SYNC)`. A mount with a `closetimeo`
+above 2 seconds can still fail the fixture check.
+
 ## 5. Build the app
 
 **From CI.** You can start this from any machine with `gh`, against any branch
@@ -274,5 +281,5 @@ encrypted files. Never commit keys or game images.
 | macOS 15 (Darwin 24.6), Intel, local APFS | 10/10 stable / stable | passed |
 | macOS smbfs, luigi and mario shares (`FILE_IDS_SUPPORTED`) | 10/10 stable / stable | passed (luigi_data3) |
 | macOS smbfs, peach_data, UGreen NAS (no `FILE_IDS_SUPPORTED`) | 10/10 stable / changed 10/10 | not run |
-| Linux (CachyOS) | not run | not run |
+| Linux (CachyOS), kernel cifs, luigi, mario and peach shares (`serverino`) | 10/10 stable / stable | passed on all seven shares, with intake on local disk, the same server and another server |
 | Windows | not run | not run |

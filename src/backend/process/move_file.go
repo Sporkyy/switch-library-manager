@@ -37,6 +37,9 @@ type organizationFileOperations struct {
 	remove          func(string) error
 	chtimes         func(string, time.Time, time.Time) error
 	chtimesOpen     func(organizationTemporaryFile, time.Time, time.Time) error
+	// closeExclusive closes an exclusively created copy, always releasing the
+	// handle, and keeps the given times once the server has seen the close.
+	closeExclusive func(organizationTemporaryFile, os.FileInfo, time.Time, time.Time) error
 }
 
 func defaultOrganizationFileOperations() organizationFileOperations {
@@ -52,10 +55,11 @@ func defaultOrganizationFileOperations() organizationFileOperations {
 		createExclusive: func(path string) (organizationTemporaryFile, error) {
 			return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		},
-		lstat:       os.Lstat,
-		remove:      os.Remove,
-		chtimes:     os.Chtimes,
-		chtimesOpen: setOrganizationOpenFileTimes,
+		lstat:          os.Lstat,
+		remove:         os.Remove,
+		chtimes:        os.Chtimes,
+		chtimesOpen:    setOrganizationOpenFileTimes,
+		closeExclusive: closeExclusiveOrganizationCopy,
 	}
 }
 
@@ -275,8 +279,14 @@ func copyOrganizationFile(move OrganizationMove, operations organizationFileOper
 		}
 	}
 	destinationOpen = false
-	if err := destination.Close(); err != nil {
-		return fmt.Errorf("close destination copy %q: %w", destination.Name(), err)
+	var closeErr error
+	if exclusiveDestination {
+		closeErr = operations.closeExclusive(destination, createdStamp, initial.ModTime(), initial.ModTime())
+	} else {
+		closeErr = destination.Close()
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close destination copy %q: %w", destination.Name(), closeErr)
 	}
 
 	finalInfo, err := source.Stat()

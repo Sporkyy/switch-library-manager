@@ -64,10 +64,17 @@ func TestOrganizeLibraryScratchMount(t *testing.T) {
 			if flushErr != nil || closeErr != nil {
 				t.Fatalf("flush fixture: %v; close fixture: %v", flushErr, closeErr)
 			}
+			// Linux CIFS defers the server close of the writing handles. When
+			// that close arrives, the server stamps the close time over any
+			// time set before it, so backdate the fixture only afterwards.
+			if onRealMount() {
+				time.Sleep(mountSettleDelay)
+			}
 			stamp := time.Date(2020, 2, 3, 4, 5, 6, 0, time.UTC)
 			if err := os.Chtimes(source, stamp, stamp); err != nil {
 				t.Fatal(err)
 			}
+			assertDurableModTime(t, source, stamp, "fixture source")
 			base := t.TempDir()
 			options := settings.OrganizeOptions{
 				RenameFiles:            true,
@@ -140,15 +147,38 @@ func TestOrganizeLibraryScratchMount(t *testing.T) {
 			if err != nil || !bytes.Equal(got, contents) {
 				t.Fatalf("destination contents differ: bytes=%d error=%v", len(got), err)
 			}
-			info, err := os.Stat(destination)
-			if err != nil || !info.ModTime().Equal(stamp) {
-				t.Fatalf("destination modification time was not preserved: info=%v error=%v", info, err)
-			}
+			assertDurableModTime(t, destination, stamp, "destination")
 			again, err := process.BuildOrganizationPlan(library, application.state.localDB, application.state.switchDB, options)
 			if err != nil || len(again.Moves) != 0 || len(again.Conflicts) != 0 {
 				t.Fatalf("rerun should plan zero moves: plan=%+v error=%v", again, err)
 			}
 		})
+	}
+}
+
+// mountSettleDelay outlasts the Linux CIFS deferred close (closetimeo,
+// default 1s) and attribute cache (actimeo, default 1s). A deferred close that
+// reaches the server after writes makes it stamp the close time, replacing a
+// modification time the client set earlier.
+const mountSettleDelay = 2500 * time.Millisecond
+
+func onRealMount() bool {
+	return os.Getenv("SLM_ORGANIZE_TEST_ROOT") != "" || os.Getenv("SLM_ORGANIZE_TEST_INTAKE_ROOT") != ""
+}
+
+// assertDurableModTime checks the modification time the server holds once
+// deferred closes and cached attributes have expired. Local runs skip the wait.
+func assertDurableModTime(t *testing.T, path string, want time.Time, what string) {
+	t.Helper()
+	if onRealMount() {
+		time.Sleep(mountSettleDelay)
+	}
+	got, err := serverModTime(path)
+	if err != nil {
+		t.Fatalf("%s modification time: %v", what, err)
+	}
+	if !got.Equal(want) {
+		t.Fatalf("%s %q modification time on the server = %v, want %v", what, path, got.UTC(), want.UTC())
 	}
 }
 

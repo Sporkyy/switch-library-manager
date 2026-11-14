@@ -34,17 +34,14 @@ func renameNoReplaceOnLinux(from, to string, fileSystemType func(string) (uint32
 		// The SMB check is a safeguard, not a precondition: statfs can fail on
 		// FUSE and network mounts where renameat2 itself still works.
 		zap.S().Warnw("Could not identify destination filesystem before exclusive rename", "directory", directory, "error", err)
-	} else {
-		switch kind {
-		case unix.CIFS_SUPER_MAGIC, unix.SMB2_SUPER_MAGIC, unix.SMB_SUPER_MAGIC:
-			// Linux CIFS cifs_rename2 does not pass RENAME_NOREPLACE to
-			// cifs_do_rename; SMB2_OP_RENAME sets ReplaceIfExists = 1.
-			// Another client's destination can therefore be overwritten.
-			// https://github.com/torvalds/linux/blob/master/fs/smb/client/inode.c
-			// https://github.com/torvalds/linux/blob/master/fs/smb/client/smb2inode.c
-			// Use the exclusive-create copy path instead, including publication.
-			return &os.LinkError{Op: "renameat2(RENAME_NOREPLACE) unavailable on Linux SMB/CIFS", Old: from, New: to, Err: unix.EOPNOTSUPP}
-		}
+	} else if isLinuxSMBFileSystem(kind) {
+		// Linux CIFS cifs_rename2 does not pass RENAME_NOREPLACE to
+		// cifs_do_rename; SMB2_OP_RENAME sets ReplaceIfExists = 1.
+		// Another client's destination can therefore be overwritten.
+		// https://github.com/torvalds/linux/blob/master/fs/smb/client/inode.c
+		// https://github.com/torvalds/linux/blob/master/fs/smb/client/smb2inode.c
+		// Use the exclusive-create copy path instead, including publication.
+		return &os.LinkError{Op: "renameat2(RENAME_NOREPLACE) unavailable on Linux SMB/CIFS", Old: from, New: to, Err: unix.EOPNOTSUPP}
 	}
 	renameErr := rename(from, to)
 	if renameErr == nil {
@@ -57,6 +54,14 @@ func renameNoReplaceOnLinux(from, to string, fileSystemType func(string) (uint32
 		return &os.LinkError{Op: "renameat2(RENAME_NOREPLACE) unsupported by destination filesystem", Old: from, New: to, Err: errors.Join(unix.EOPNOTSUPP, renameErr)}
 	}
 	return &os.LinkError{Op: "renameat2(RENAME_NOREPLACE)", Old: from, New: to, Err: renameErr}
+}
+
+func isLinuxSMBFileSystem(kind uint32) bool {
+	switch kind {
+	case unix.CIFS_SUPER_MAGIC, unix.SMB2_SUPER_MAGIC, unix.SMB_SUPER_MAGIC:
+		return true
+	}
+	return false
 }
 
 func linuxNoReplaceUnsupported(directory string, rename func(string, string) error, createTemp func(string, string) (organizationTemporaryFile, error)) bool {
