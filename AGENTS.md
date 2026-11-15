@@ -61,5 +61,5 @@ go vet ./...
 
 - For parser, filesystem, persistence, or shared-state changes, add focused tests and run `go test -race ./...` when practical.
 - Report whether tests used synthetic fixtures, filename-only fallback data, or real encrypted Switch files. Do not add proprietary keys or large game images to the repository.
-- For move, organize, or other filesystem behavior that differs by OS or share type, follow `docs/testing.md`: it covers the opt-in real-mount tests (`SLM_FILE_ID_TEST_ROOTS`, `SLM_ORGANIZE_TEST_ROOT`, `SLM_ORGANIZE_TEST_INTAKE_ROOT`), per-platform builds, and what to record.
+- For move, organize, or other filesystem behavior that differs by OS or share type, follow `docs/testing.md` (on macOS and Linux, `scripts/test-mounts.sh` runs the checks against every mounted SMB share): it covers the opt-in real-mount tests (`SLM_FILE_ID_TEST_ROOTS`, `SLM_ORGANIZE_TEST_ROOT`, `SLM_ORGANIZE_TEST_INTAKE_ROOT`), per-platform builds, and what to record.
 - For packaging changes, run `wails build` from `src` and verify the generated output under `src/build/bin`. The CI build installs the pinned Wails CLI and builds each configured platform on its native runner.

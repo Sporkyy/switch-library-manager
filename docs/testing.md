@@ -35,6 +35,46 @@ export PATH="$(go env GOPATH)/bin:$PATH"   # PowerShell: $env:Path += ";$(go env
 wails doctor
 ```
 
+## Run everything at once (macOS and Linux)
+
+`scripts/test-mounts.sh` runs steps 1, 3 and 4 against every mounted SMB
+share and prints one PASS/FAIL line per check:
+
+```sh
+scripts/test-mounts.sh --list    # show the shares and servers it found
+scripts/test-mounts.sh           # run everything
+scripts/test-mounts.sh --no-race /Volumes/peach_data /Volumes/luigi_data3
+```
+
+It runs these checks:
+
+- **Code checks:** `gofmt`, `go vet`, `go test` and `go test -race`.
+  `--no-race` skips the race run.
+- **For each share:** the file-ID probe, and the scratch Organize test with the
+  intake folder on local disk.
+- **Across servers:** the scratch Organize test with the library on one server
+  and the intake on another, in both directions. It uses one share per server.
+- **Cleanup:** a check that no `.slm-*` scratch entries are left on any share.
+
+Which shares it tests:
+
+- With no share paths, it finds them itself: `cifs`/`smb3` mounts on Linux,
+  `smbfs` mounts on macOS.
+- Passing paths tests only those. A path that isn't a mounted share still gets
+  the per-share tests, but it isn't used for the cross-server runs.
+
+How to read the results:
+
+- **Failures:** each FAIL line is followed by the message from each failing
+  test. The summary at the end points to the full log.
+- **Lock warning:** a `lock refused` note means a Linux mount refused the
+  synchronous-close lock. Record its options from step 2.
+- **Exit code:** 0 when everything passes, 1 when a check fails, 2 for a usage
+  or setup error.
+
+A full run takes about 30 seconds per share, plus about 30 seconds per pair of
+servers. On Windows, follow the steps below by hand.
+
 ## 1. Unit tests
 
 From `src`:
@@ -291,64 +331,28 @@ encrypted files. Never commit keys or game images.
 The SMB close-and-restore step that Linux added in `37061df` now lives in
 `src/backend/process/close_exclusive_copy_unix.go`, and macOS uses it too.
 Linux behavior should not have changed. It still locks before the close, then
-reopens and restores the times. Its tests were moved and extended. On macOS
-they were only compiled for Linux (`GOOS=linux go vet`), never run. Run these
-on the CachyOS machine, from the repository root:
+reopens and restores the times. On macOS its tests were only compiled for
+Linux, never run. On the CachyOS machine, from the repository root:
 
 ```sh
 git switch fix/organize-exclusive-copy-fallback
 git pull --ff-only
-cd src
-
-# 1. The whole suite, then the close tests by name to confirm the Linux-only
-#    ones actually ran
-gofmt -l .
-go vet ./...
-go test ./...
-go test -race ./...
-go test ./backend/process -run 'CloseExclusive|LinuxSynchronous|LinuxFileSystem' -count=1 -v \
-  | grep -E '^(--- |ok|FAIL)'
-
-# 2. The scratch Organize test on every kernel cifs mount, with intake on local
-#    disk, then across servers (pick one share on each server)
-mkdir -p /tmp/slm-intake
-for share in $(findmnt -rn -t cifs,smb3 -o TARGET); do
-  echo "== $share"
-  SLM_ORGANIZE_TEST_ROOT="$share" SLM_ORGANIZE_TEST_INTAKE_ROOT=/tmp/slm-intake \
-    go test ./backend/app -run '^TestOrganizeLibraryScratchMount$' -v -count=1 \
-    | grep -E '^\s*(--- |ok|FAIL)|want 20|Could not'
-done
-SLM_ORGANIZE_TEST_ROOT=/path/to/peach_data SLM_ORGANIZE_TEST_INTAKE_ROOT=/path/to/luigi_data3 \
-  go test ./backend/app -run '^TestOrganizeLibraryScratchMount$' -v -count=1 \
-  | grep -E '^\s*(--- |ok|FAIL)|want 20|Could not'
-rm -rf /tmp/slm-intake
-
-# 3. No scratch folders left behind
-for share in $(findmnt -rn -t cifs,smb3 -o TARGET); do ls -a "$share" | grep '^\.slm-'; done
+scripts/test-mounts.sh --list   # all seven cifs shares on luigi, mario and peach should appear
+scripts/test-mounts.sh
 ```
 
-What to expect:
+Then confirm that the Linux-only close tests ran, not just compiled:
 
-- **Step 1:** the `-v` run lists these tests:
-  - shared tests, `TestCloseExclusiveCopy*`:
-    `RestoresTimeStampedByServerClose`, `RestoresWithoutBeforeClose`,
-    `OnlyClosesOtherFileSystems`, `RefusesReplacedDestination`,
-    `WarnsWhenFileSystemIsUnknown` and `ReportsFailures`;
-  - Linux tests, `TestCloseExclusiveCopyOnLinux*`:
-    `LocksSMBBeforeCloseAndRestores`, `RecognizesEverySMBMagic`,
-    `OnlyClosesOtherFileSystems`, `WarnsWhenLockFails` and
-    `WarnsWhenFileSystemIsUnknown`;
-  - `TestLinuxSynchronousCloseLockOnLocalFile` and
-    `TestLinuxFileSystemTypeReportsClosedFile`.
+```sh
+cd src
+go test ./backend/process -run 'CloseExclusive|LinuxSynchronous|LinuxFileSystem' -count=1 -v | grep -E '^(--- |ok|FAIL)'
+```
 
-  All must pass.
-- **Step 2:** all four scenarios pass on every share.
-  - Any `want 2020-02-03 04:05:06` line means a moved file lost its time. That
-    is a regression from `37061df`'s Linux results.
-  - A `Could not lock SMB destination` line means the mount refused the lock.
-    Record its mount options.
-- **Step 3:** prints nothing.
+That command should list 13 passing tests: six `TestCloseExclusiveCopy*`, five
+`TestCloseExclusiveCopyOnLinux*`, `TestLinuxSynchronousCloseLockOnLocalFile`
+and `TestLinuxFileSystemTypeReportsClosedFile`.
 
-The `findmnt` loop skips mounts whose path contains spaces. Run those by hand.
-When everything passes, add the results to the Linux row of the known-results
-table, delete this section, and commit.
+A moved file losing its time shows up as an Organize FAIL with a
+`want 2020-02-03 04:05:06` message. That would be a regression from
+`37061df`'s Linux results. When everything passes, add the results to the
+Linux row of the known-results table, delete this section, and commit.
