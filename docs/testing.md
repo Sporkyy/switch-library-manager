@@ -321,38 +321,5 @@ encrypted files. Never commit keys or game images.
 | macOS 15 (Darwin 24.6), Intel, local APFS | 10/10 stable / stable | passed |
 | macOS smbfs, luigi and mario shares (`FILE_IDS_SUPPORTED`) | 10/10 stable / stable | passed (luigi_data3), with intake on local disk, and from luigi_data3 into local disk |
 | macOS smbfs, peach_data, UGreen NAS (no `FILE_IDS_SUPPORTED`) | 10/10 stable / changed 10/10 | passed, with intake on local disk and on luigi_data3, and from peach_data into local disk; before the reopen-and-restore change, moved files kept the copy time |
-| Linux (CachyOS), kernel cifs, luigi, mario and peach shares (`serverino`) | 10/10 stable / stable | passed on all seven shares, with intake on local disk, the same server and another server |
+| Linux (CachyOS), kernel cifs, luigi, mario and peach shares (`serverino`) | 10/10 stable / stable | passed on all seven shares, with intake on local disk, the same server and another server; rerun with `scripts/test-mounts.sh` after the shared close-and-restore refactor (`b4235f4`): all 31 checks passed, including every pair of servers |
 | Windows | not run | not run |
-
-### Pending verification
-
-#### Linux: shared close-and-restore refactor (November 15, 2026)
-
-The SMB close-and-restore step that Linux added in `37061df` now lives in
-`src/backend/process/close_exclusive_copy_unix.go`, and macOS uses it too.
-Linux behavior should not have changed. It still locks before the close, then
-reopens and restores the times. On macOS its tests were only compiled for
-Linux, never run. On the CachyOS machine, from the repository root:
-
-```sh
-git switch fix/organize-exclusive-copy-fallback
-git pull --ff-only
-scripts/test-mounts.sh --list   # all seven cifs shares on luigi, mario and peach should appear
-scripts/test-mounts.sh
-```
-
-Then confirm that the Linux-only close tests ran, not just compiled:
-
-```sh
-cd src
-go test ./backend/process -run 'CloseExclusive|LinuxSynchronous|LinuxFileSystem' -count=1 -v | grep -E '^(--- |ok|FAIL)'
-```
-
-That command should list 13 passing tests: six `TestCloseExclusiveCopy*`, five
-`TestCloseExclusiveCopyOnLinux*`, `TestLinuxSynchronousCloseLockOnLocalFile`
-and `TestLinuxFileSystemTypeReportsClosedFile`.
-
-A moved file losing its time shows up as an Organize FAIL with a
-`want 2020-02-03 04:05:06` message. That would be a regression from
-`37061df`'s Linux results. When everything passes, add the results to the
-Linux row of the known-results table, delete this section, and commit.
