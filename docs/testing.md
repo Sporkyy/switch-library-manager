@@ -279,7 +279,76 @@ encrypted files. Never commit keys or game images.
 | Environment | Probe (close / rename) | Scratch Organize |
 | --- | --- | --- |
 | macOS 15 (Darwin 24.6), Intel, local APFS | 10/10 stable / stable | passed |
-| macOS smbfs, luigi and mario shares (`FILE_IDS_SUPPORTED`) | 10/10 stable / stable | passed (luigi_data3) |
-| macOS smbfs, peach_data, UGreen NAS (no `FILE_IDS_SUPPORTED`) | 10/10 stable / changed 10/10 | not run |
+| macOS smbfs, luigi and mario shares (`FILE_IDS_SUPPORTED`) | 10/10 stable / stable | passed (luigi_data3), with intake on local disk, and from luigi_data3 into local disk |
+| macOS smbfs, peach_data, UGreen NAS (no `FILE_IDS_SUPPORTED`) | 10/10 stable / changed 10/10 | passed, with intake on local disk and on luigi_data3, and from peach_data into local disk; before the reopen-and-restore change, moved files kept the copy time |
 | Linux (CachyOS), kernel cifs, luigi, mario and peach shares (`serverino`) | 10/10 stable / stable | passed on all seven shares, with intake on local disk, the same server and another server |
 | Windows | not run | not run |
+
+### Pending verification
+
+#### Linux: shared close-and-restore refactor (November 15, 2026)
+
+The SMB close-and-restore step that Linux added in `37061df` now lives in
+`src/backend/process/close_exclusive_copy_unix.go`, and macOS uses it too.
+Linux behavior should not have changed. It still locks before the close, then
+reopens and restores the times. Its tests were moved and extended. On macOS
+they were only compiled for Linux (`GOOS=linux go vet`), never run. Run these
+on the CachyOS machine, from the repository root:
+
+```sh
+git switch fix/organize-exclusive-copy-fallback
+git pull --ff-only
+cd src
+
+# 1. The whole suite, then the close tests by name to confirm the Linux-only
+#    ones actually ran
+gofmt -l .
+go vet ./...
+go test ./...
+go test -race ./...
+go test ./backend/process -run 'CloseExclusive|LinuxSynchronous|LinuxFileSystem' -count=1 -v \
+  | grep -E '^(--- |ok|FAIL)'
+
+# 2. The scratch Organize test on every kernel cifs mount, with intake on local
+#    disk, then across servers (pick one share on each server)
+mkdir -p /tmp/slm-intake
+for share in $(findmnt -rn -t cifs,smb3 -o TARGET); do
+  echo "== $share"
+  SLM_ORGANIZE_TEST_ROOT="$share" SLM_ORGANIZE_TEST_INTAKE_ROOT=/tmp/slm-intake \
+    go test ./backend/app -run '^TestOrganizeLibraryScratchMount$' -v -count=1 \
+    | grep -E '^\s*(--- |ok|FAIL)|want 20|Could not'
+done
+SLM_ORGANIZE_TEST_ROOT=/path/to/peach_data SLM_ORGANIZE_TEST_INTAKE_ROOT=/path/to/luigi_data3 \
+  go test ./backend/app -run '^TestOrganizeLibraryScratchMount$' -v -count=1 \
+  | grep -E '^\s*(--- |ok|FAIL)|want 20|Could not'
+rm -rf /tmp/slm-intake
+
+# 3. No scratch folders left behind
+for share in $(findmnt -rn -t cifs,smb3 -o TARGET); do ls -a "$share" | grep '^\.slm-'; done
+```
+
+What to expect:
+
+- **Step 1:** the `-v` run lists these tests:
+  - shared tests, `TestCloseExclusiveCopy*`:
+    `RestoresTimeStampedByServerClose`, `RestoresWithoutBeforeClose`,
+    `OnlyClosesOtherFileSystems`, `RefusesReplacedDestination`,
+    `WarnsWhenFileSystemIsUnknown` and `ReportsFailures`;
+  - Linux tests, `TestCloseExclusiveCopyOnLinux*`:
+    `LocksSMBBeforeCloseAndRestores`, `RecognizesEverySMBMagic`,
+    `OnlyClosesOtherFileSystems`, `WarnsWhenLockFails` and
+    `WarnsWhenFileSystemIsUnknown`;
+  - `TestLinuxSynchronousCloseLockOnLocalFile` and
+    `TestLinuxFileSystemTypeReportsClosedFile`.
+
+  All must pass.
+- **Step 2:** all four scenarios pass on every share.
+  - Any `want 2020-02-03 04:05:06` line means a moved file lost its time. That
+    is a regression from `37061df`'s Linux results.
+  - A `Could not lock SMB destination` line means the mount refused the lock.
+    Record its mount options.
+- **Step 3:** prints nothing.
+
+The `findmnt` loop skips mounts whose path contains spaces. Run those by hand.
+When everything passes, add the results to the Linux row of the known-results
+table, delete this section, and commit.

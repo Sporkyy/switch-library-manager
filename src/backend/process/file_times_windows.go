@@ -15,8 +15,9 @@ func setOrganizationOpenFileTimes(file organizationTemporaryFile, atime, mtime t
 	return windows.SetFileTime(windows.Handle(file.Fd()), nil, &access, &modified)
 }
 
-// closeExclusiveOrganizationCopy only closes here: the deferred SMB close that
-// replaces preserved times is specific to the Linux CIFS client.
+// closeExclusiveOrganizationCopy only closes here. The deferred SMB close that
+// replaces preserved times was observed with the Linux and macOS clients;
+// Windows SMB destinations have not been tested.
 func closeExclusiveOrganizationCopy(file organizationTemporaryFile, _ os.FileInfo, _, _ time.Time) error {
 	return file.Close()
 }
