@@ -339,14 +339,14 @@ func addOrganizationMove(plan *OrganizationPlan, seenSources map[string]struct{}
 // its place. It reports whether the move of the kept file is no longer needed.
 func (plan *OrganizationPlan) keepDuplicateInPlace(index int, sourceKey, destinationKey string) bool {
 	candidate := plan.Cleanup[index]
-	if candidate.ReasonCode != db.REASON_DUPLICATE || candidate.File.Size != candidate.Replacement.Size {
+	if !candidate.Interchangeable || candidate.ReasonCode != db.REASON_DUPLICATE || candidate.File.Size != candidate.Replacement.Size {
 		return false
 	}
 	replacementKey, err := organizationPathKey(filepath.Join(candidate.Replacement.BaseFolder, candidate.Replacement.FileName))
 	if err != nil || replacementKey != sourceKey {
 		return false
 	}
-	plan.Cleanup[index] = db.CleanupCandidate{File: candidate.Replacement, Replacement: candidate.File, ReasonCode: db.REASON_DUPLICATE}
+	plan.Cleanup[index] = db.CleanupCandidate{File: candidate.Replacement, Replacement: candidate.File, ReasonCode: db.REASON_DUPLICATE, Interchangeable: true}
 	delete(plan.pendingCleanup, destinationKey)
 	plan.pendingCleanup[sourceKey] = index
 	// Other files deleted in favor of the source now rely on the occupant.

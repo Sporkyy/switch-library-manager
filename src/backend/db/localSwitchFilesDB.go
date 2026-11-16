@@ -101,6 +101,9 @@ type CleanupCandidate struct {
 	File        ExtendedFileInfo
 	Replacement ExtendedFileInfo
 	ReasonCode  int
+	// Interchangeable permits reversing this cleanup decision. A fresh scan
+	// must verify two standalone files with the same title ID and version.
+	Interchangeable bool
 }
 
 func (ldb *LocalSwitchDBManager) CreateLocalSwitchFilesDB(folders []string,
@@ -554,8 +557,25 @@ func buildCleanupCandidates(
 		if err != nil || titles[prefix] == nil {
 			continue
 		}
-		if replacement, ok := cleanupReplacement(titles[prefix], metadata, file); ok && !mayBeSamePhysicalFile(file, replacement) {
-			candidates = append(candidates, CleanupCandidate{File: file, Replacement: replacement, ReasonCode: reason.ReasonCode})
+		keeper, ok := cleanupReplacement(titles[prefix], metadata, file)
+		if !ok {
+			continue
+		}
+		replacement := keeper.ExtendedInfo
+		sameContentVersion := strings.EqualFold(metadata.TitleId, keeper.Metadata.TitleId) && metadata.Version == keeper.Metadata.Version
+		if sameContentVersion && file.Size != replacement.Size {
+			// A prior interrupted copy can have a valid filename (or readable
+			// metadata) but fewer bytes than its source. Neither scan order nor
+			// the organized name establishes which different-sized copy is good.
+			reason.ReasonText += "\ndifferent sizes; both files retained for review"
+			skipped[file] = reason
+			continue
+		}
+		if !mayBeSamePhysicalFile(file, replacement) {
+			candidates = append(candidates, CleanupCandidate{
+				File: file, Replacement: replacement, ReasonCode: reason.ReasonCode,
+				Interchangeable: sameContentVersion && len(fileContents[replacement]) == 1,
+			})
 		}
 	}
 	return candidates
@@ -589,11 +609,11 @@ func isSplitFilePart(fileName string) bool {
 	return err == nil && part == 0
 }
 
-func cleanupReplacement(game *SwitchGameFiles, metadata *switchfs.ContentMetaAttributes, candidate ExtendedFileInfo) (ExtendedFileInfo, bool) {
+func cleanupReplacement(game *SwitchGameFiles, metadata *switchfs.ContentMetaAttributes, candidate ExtendedFileInfo) (SwitchFileInfo, bool) {
 	id := strings.ToLower(metadata.TitleId)
 	if strings.HasSuffix(id, "000") {
 		keeper := game.File
-		return keeper.ExtendedInfo, game.BaseExist && keeper.Metadata != nil && strings.EqualFold(keeper.Metadata.TitleId, id) && !sameExtendedFilePath(keeper.ExtendedInfo, candidate)
+		return keeper, game.BaseExist && keeper.Metadata != nil && strings.EqualFold(keeper.Metadata.TitleId, id) && !sameExtendedFilePath(keeper.ExtendedInfo, candidate)
 	}
 	if strings.HasSuffix(id, "800") {
 		var keeper SwitchFileInfo
@@ -606,13 +626,13 @@ func cleanupReplacement(game *SwitchGameFiles, metadata *switchfs.ContentMetaAtt
 				keeper, found = update, true
 			}
 		}
-		return keeper.ExtendedInfo, found
+		return keeper, found
 	}
 	keeper, found := game.Dlc[id]
 	if !found || keeper.Metadata == nil || !strings.EqualFold(keeper.Metadata.TitleId, id) || keeper.Metadata.Version < metadata.Version || sameExtendedFilePath(keeper.ExtendedInfo, candidate) {
-		return ExtendedFileInfo{}, false
+		return SwitchFileInfo{}, false
 	}
-	return keeper.ExtendedInfo, true
+	return keeper, true
 }
 
 func (ldb *LocalSwitchDBManager) getGameMetadata(file ExtendedFileInfo,

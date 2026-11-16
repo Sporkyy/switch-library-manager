@@ -1,9 +1,11 @@
 package app
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -129,10 +131,10 @@ func TestOrganizeLibraryResolvesSupersededAndDuplicateFiles(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			application, library, intake := newScratchOrganizeApp(t, !test.keepOld)
 			for _, name := range test.intake {
-				writeScratchFile(t, intake, name, intake+"/"+name)
+				writeScratchFile(t, intake, name, fmt.Sprintf("%-512s", intake+"/"+name))
 			}
 			for _, name := range test.library {
-				writeScratchFile(t, library, name, library+"/"+name)
+				writeScratchFile(t, library, name, fmt.Sprintf("%-512s", library+"/"+name))
 			}
 
 			result, err := application.OrganizeLibrary()
@@ -152,7 +154,7 @@ func TestOrganizeLibraryResolvesSupersededAndDuplicateFiles(t *testing.T) {
 			// when the intake folder holds nothing newer.
 			for _, name := range test.library {
 				contents, readErr := os.ReadFile(filepath.Join(library, filepath.FromSlash(name)))
-				if readErr == nil && string(contents) != library+"/"+name {
+				if readErr == nil && string(contents) != fmt.Sprintf("%-512s", library+"/"+name) {
 					t.Errorf("library file %q was replaced by %q", name, contents)
 				}
 			}
@@ -193,8 +195,8 @@ func TestOrganizeLibraryResolvesDuplicateAtItsOrganizedName(t *testing.T) {
 			cleanup: true, wantStatus: "completed", wantLibrary: []string{baseOut}, wantOrganized: "copy two",
 		},
 		{
-			name: "different size replaces the organized name with the kept copy", misnamed: "the longer copy", organized: "short",
-			cleanup: true, wantStatus: "completed", wantLibrary: []string{baseOut}, wantOrganized: "the longer copy",
+			name: "different sizes are retained for review", misnamed: "the longer copy", organized: "short",
+			cleanup: true, wantStatus: "blocked", wantLibrary: []string{misnamed, baseOut}, wantOrganized: "short",
 		},
 		{
 			name: "without cleanup the occupied name is a conflict", misnamed: "copy one", organized: "copy two",
@@ -219,6 +221,56 @@ func TestOrganizeLibraryResolvesDuplicateAtItsOrganizedName(t *testing.T) {
 			}
 			if contents, err := os.ReadFile(filepath.Join(library, filepath.FromSlash(baseOut))); err != nil || string(contents) != test.wantOrganized {
 				t.Errorf("organized file contents = %q, error = %v; want %q", contents, err, test.wantOrganized)
+			}
+		})
+	}
+}
+
+// An interrupted exclusive-create copy can leave a partial file at its final
+// library name. Retrying must not delete the complete intake file in its favor.
+func TestOrganizeLibraryRetainsCompleteSourceBesidePartialCopy(t *testing.T) {
+	for _, organize := range []bool{false, true} {
+		t.Run("organize="+strconv.FormatBool(organize), func(t *testing.T) {
+			application, library, intake := newScratchOrganizeApp(t, true)
+			if !organize {
+				options, err := settings.ReadSettings(application.baseFolder)
+				if err != nil {
+					t.Fatal(err)
+				}
+				options.Organization.RenameFiles = false
+				options.Organization.CreateFolderPerGame = false
+				options.Organization.MoveScanFilesToLibrary = false
+				// Importing controls cleanup scope even when no rename or
+				// per-game-folder change is requested, so use a second copy
+				// inside the library for the cleanup-only case.
+				intake = library
+				if err := settings.SaveSettingsWithError(options, application.baseFolder); err != nil {
+					t.Fatal(err)
+				}
+			}
+			const partialName = "Scratch Game [0100000000010000]/Scratch Game [0100000000010000][v0].nsp"
+			const sourceName = "Z incoming [0100000000010000][v0].nsp"
+			writeScratchFile(t, library, partialName, "partial")
+			writeScratchFile(t, intake, sourceName, "complete source content")
+			for attempt := 0; attempt < 2; attempt++ {
+				if _, err := application.OrganizeLibrary(); err != nil {
+					t.Fatal(err)
+				}
+				for path, want := range map[string]string{
+					filepath.Join(intake, sourceName):   "complete source content",
+					filepath.Join(library, partialName): "partial",
+				} {
+					if got, err := os.ReadFile(path); err != nil || string(got) != want {
+						t.Fatalf("file %q = %q, error=%v; want %q", path, got, err, want)
+					}
+				}
+				foundMismatch := false
+				for _, skipped := range application.state.localDB.Skipped {
+					foundMismatch = foundMismatch || strings.Contains(skipped.ReasonText, "different sizes")
+				}
+				if !foundMismatch {
+					t.Fatal("Issues did not explain why the different-sized files were retained")
+				}
 			}
 		})
 	}

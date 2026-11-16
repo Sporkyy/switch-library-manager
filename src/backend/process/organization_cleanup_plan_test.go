@@ -96,8 +96,8 @@ func TestOrganizationPlanKeepsDuplicateThatHasTheOrganizedName(t *testing.T) {
 			File:      db.SwitchFileInfo{ExtendedInfo: keeperInfo, Metadata: metadataForID("0100000000010000", 0)},
 		}},
 		CleanupCandidates: []db.CleanupCandidate{
-			{File: organizedInfo, Replacement: keeperInfo, ReasonCode: db.REASON_DUPLICATE},
-			{File: otherInfo, Replacement: keeperInfo, ReasonCode: db.REASON_DUPLICATE},
+			{File: organizedInfo, Replacement: keeperInfo, ReasonCode: db.REASON_DUPLICATE, Interchangeable: true},
+			{File: otherInfo, Replacement: keeperInfo, ReasonCode: db.REASON_DUPLICATE, Interchangeable: true},
 		},
 	}
 	remote := &db.SwitchTitlesDB{TitlesMap: map[string]*db.SwitchTitle{
@@ -132,28 +132,29 @@ func TestOrganizationPlanKeepsDuplicateThatHasTheOrganizedName(t *testing.T) {
 	}
 }
 
-// A copy of a different size is not interchangeable with the planned file, so
-// cleanup deletes it and the kept file is moved into its name.
-func TestOrganizationPlanReplacesDifferentSizedDuplicateAtOrganizedName(t *testing.T) {
+// Older versions can differ in size. Cleanup deletes the old version before
+// moving the new one into its organized name when the template omits VERSION.
+func TestOrganizationPlanReplacesOlderVersionAtOrganizedName(t *testing.T) {
 	root := t.TempDir()
+	const updateID = "0100000000010800"
 	keeper := filepath.Join(root, "a.nsp")
-	organized := filepath.Join(root, "Game.nsp")
+	organized := filepath.Join(root, updateID+".nsp")
 	writeFixture(t, keeper, "the kept copy")
 	writeFixture(t, organized, "short")
 	keeperInfo := extendedInfoForPath(t, keeper)
 	local := &db.LocalSwitchFilesDB{
 		TitlesMap: map[string]*db.SwitchGameFiles{"0100000000010": {
-			BaseExist: true,
-			File:      db.SwitchFileInfo{ExtendedInfo: keeperInfo, Metadata: metadataForID("0100000000010000", 0)},
+			LatestUpdate: 2,
+			Updates: map[int]db.SwitchFileInfo{
+				1: {ExtendedInfo: extendedInfoForPath(t, organized), Metadata: metadataForID(updateID, 1)},
+				2: {ExtendedInfo: keeperInfo, Metadata: metadataForID(updateID, 2)},
+			},
 		}},
-		CleanupCandidates: []db.CleanupCandidate{{File: extendedInfoForPath(t, organized), Replacement: keeperInfo, ReasonCode: db.REASON_DUPLICATE}},
+		CleanupCandidates: []db.CleanupCandidate{{File: extendedInfoForPath(t, organized), Replacement: keeperInfo, ReasonCode: db.REASON_OLD_UPDATE}},
 	}
-	remote := &db.SwitchTitlesDB{TitlesMap: map[string]*db.SwitchTitle{
-		"0100000000010": {Attributes: db.TitleAttributes{Id: "0100000000010000", Name: "Game"}},
-	}}
-	options := settings.OrganizeOptions{RenameFiles: true, FileNameTemplate: "{TITLE_NAME}", DeleteOldUpdateFiles: true}
+	options := settings.OrganizeOptions{RenameFiles: true, FileNameTemplate: "{TITLE_ID}", DeleteOldUpdateFiles: true, ProcessWhenMissingBaseGame: true}
 
-	plan, err := BuildOrganizationPlan(root, local, remote, options)
+	plan, err := BuildOrganizationPlan(root, local, nil, options)
 	if err != nil || len(plan.Conflicts) != 0 || len(plan.Moves) != 1 || len(plan.Cleanup) != 1 {
 		t.Fatalf("plan = %#v, error = %v; want one deletion then one move", plan, err)
 	}

@@ -126,7 +126,7 @@ When `move_scan_files_to_library` is enabled, Organize imports recognized Switch
 
 When the library and the scan folders hold more than one copy of the same title, the copy already in the library is kept. Among several versions of an update or DLC, the newest is current.
 
-- With `delete_old_update_files` on, Organize first deletes the duplicates and older versions, then moves the remaining files. If a duplicate already has the name Organize would give the kept copy, and both are the same size, Organize keeps that file and deletes the other copy instead of moving it.
+- With `delete_old_update_files` on, Organize first deletes the duplicates and older versions, then moves the remaining files. Files with the same title ID and version but different sizes are retained and reported under Issues; one may be an incomplete copy. If a duplicate already has the name Organize would give the kept copy, Organize keeps it in place only when a fresh scan confirms that both files are standalone, have the same title ID and version, and are the same size. A standalone duplicate never replaces a bundle containing additional content.
 - With `delete_old_update_files` off, older versions of updates and DLC are organized alongside the newest one, so `file_name_template` needs `{VERSION}` to keep their names apart. Exact duplicates are not moved and are listed under Issues.
 
 ## Internal cache
