@@ -23,7 +23,10 @@ func TestApplyTemplateTrailingDots(t *testing.T) {
 		{"Game...???", "Game"},
 		{"BIT.TRIP", "BIT.TRIP"},
 		{"Game... [{TITLE_ID}]", "Game... [0100E95004039000]"},
-		{".Game...", ".Game"},
+		{".Game...", "Game"},
+		{".cat Milk", "cat Milk"},
+		{"... . cat Milk", "cat Milk"},
+		{"? .cat Milk", "cat Milk"},
 		{".", ""},
 		{"..", ""},
 		{"... . \t?", ""},
@@ -57,6 +60,7 @@ func TestTrailingDotsAfterSafeNameFiltering(t *testing.T) {
 		{"Know by heart…", "Know by heart", "Know by heart…"},
 		{"Oh…Sir! The Insult Simulator", "OhSir The Insult Simulator", "Oh…Sir! The Insult Simulator"},
 		{"™...", "", "™"},
+		{"™.cat Milk", "cat Milk", "™.cat Milk"},
 	} {
 		t.Run(test.input, func(t *testing.T) {
 			if got := applyTemplate(nil, true, test.input, 0); got != test.safe {
@@ -66,6 +70,75 @@ func TestTrailingDotsAfterSafeNameFiltering(t *testing.T) {
 				t.Fatalf("unfiltered name = %q, want %q", got, test.plain)
 			}
 		})
+	}
+}
+
+func TestOrganizationLeadingDots(t *testing.T) {
+	for _, allowUnicode := range []bool{false, true} {
+		for _, occupied := range []bool{false, true} {
+			t.Run("unicode="+strconv.FormatBool(allowUnicode)+"/occupied="+strconv.FormatBool(occupied), func(t *testing.T) {
+				root := t.TempDir()
+				const id, key = "0100972015984000", "0100972015984"
+				oldFolder := filepath.Join(root, ".cat Milk ["+id+"]")
+				mustMkdir(t, oldFolder)
+				source := filepath.Join(oldFolder, ".cat Milk ["+id+"][v0].nsp")
+				writeFixture(t, source, "synthetic cat Milk")
+				local := &db.LocalSwitchFilesDB{TitlesMap: map[string]*db.SwitchGameFiles{key: {
+					BaseExist: true,
+					File:      db.SwitchFileInfo{ExtendedInfo: extendedInfoForPath(t, source), Metadata: metadataForID(id, 0)},
+				}}}
+				remote := &db.SwitchTitlesDB{TitlesMap: map[string]*db.SwitchTitle{
+					key: {Attributes: db.TitleAttributes{Id: id, Name: ".cat Milk"}},
+				}}
+				options := settings.OrganizeOptions{
+					RenameFiles: true, FileNameTemplate: "{TITLE_NAME} [{TITLE_ID}][v{VERSION}]",
+					CreateFolderPerGame: true, FolderNameTemplate: "{TITLE_NAME} [{TITLE_ID}]",
+					AllowUnicodeFileNames: allowUnicode, DeleteEmptyFolders: true,
+				}
+				want := filepath.Join("cat Milk ["+id+"]", "cat Milk ["+id+"][v0].nsp")
+				destination := filepath.Join(root, want)
+				if occupied {
+					mustMkdir(t, filepath.Dir(destination))
+					writeFixture(t, destination, "existing destination")
+				}
+				preview, err := organizationPreviewForGame(root, options, local.TitlesMap[key], remote.TitlesMap[key])
+				if err != nil || len(preview) != 1 || preview[0].Path != want {
+					t.Fatalf("preview=%+v, error=%v; want %q", preview, err, want)
+				}
+				plan, err := BuildOrganizationPlan(root, local, remote, options)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if occupied {
+					if len(plan.Conflicts) == 0 || ExecuteOrganizationPlan(plan, local, root, options, nil) == nil {
+						t.Fatal("organization accepted a destination occupied after stripping leading dots")
+					}
+					for path, want := range map[string]string{source: "synthetic cat Milk", destination: "existing destination"} {
+						if got, err := os.ReadFile(path); err != nil || string(got) != want {
+							t.Fatalf("file %q = %q, error=%v; want %q", path, got, err, want)
+						}
+					}
+					return
+				}
+				if len(plan.Conflicts) != 0 || len(plan.Moves) != 1 || plan.Moves[0].Destination != destination {
+					t.Fatalf("plan=%+v; want one move to %q", plan, destination)
+				}
+				if err := ExecuteOrganizationPlan(plan, local, root, options, nil); err != nil {
+					t.Fatal(err)
+				}
+				if got, err := os.ReadFile(destination); err != nil || string(got) != "synthetic cat Milk" {
+					t.Fatalf("destination=%q, error=%v", got, err)
+				}
+				assertNotExists(t, oldFolder)
+				if name := db.ResolveGameTitleName(remote.TitlesMap[key], local.TitlesMap[key], allowUnicode); name != ".cat Milk" {
+					t.Fatalf("display title changed to %q", name)
+				}
+				again, err := BuildOrganizationPlan(root, local, remote, options)
+				if err != nil || len(again.Conflicts) != 0 || len(again.Moves) != 0 {
+					t.Fatalf("second plan=%+v, error=%v; want no moves", again, err)
+				}
+			})
+		}
 	}
 }
 

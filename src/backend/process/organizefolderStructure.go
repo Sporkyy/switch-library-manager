@@ -453,9 +453,9 @@ func applyTemplate(templateData map[string]string, useSafeNames bool, template s
 
 	result = strings.TrimSpace(result)
 	result = folderIllegalCharsRegex.ReplaceAllString(result, "")
-	// Filtering can expose dots or spaces that Windows cannot use at the end
-	// of a path component. Normalize before adding a suffix or file extension.
-	result = strings.TrimRight(result, ". ")
+	// Filtering can expose leading dots that hide files on Unix, or trailing
+	// dots and spaces Windows cannot use. Trim before suffixes and extensions.
+	result = strings.Trim(result, ". ")
 	if result != "" && nameTry > 0 {
 		result += "(" + strconv.Itoa(nameTry) + ")"
 	}
