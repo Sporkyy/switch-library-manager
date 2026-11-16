@@ -64,7 +64,9 @@ func (e *OrganizationConflictsError) Error() string {
 // cleanup candidates, before any move. Those files are not moved, and a
 // destination one of them occupies is free once cleanup has run. When the
 // occupant is an exact duplicate of the file planned to replace it, the plan
-// keeps the occupant and deletes the other copy instead of moving it.
+// keeps the occupant and deletes the other copy instead of moving it. A
+// candidate is kept off the plan unless the copy it is deleted in favor of is
+// in the library or is moved there by the plan.
 func BuildOrganizationPlan(
 	baseFolder string,
 	localDB *db.LocalSwitchFilesDB,
@@ -78,13 +80,98 @@ func BuildOrganizationPlan(
 		return OrganizationPlan{}, fmt.Errorf("organization options are invalid")
 	}
 
-	plan := OrganizationPlan{Moves: []OrganizationMove{}, Conflicts: []OrganizationConflict{}}
+	var candidates []db.CleanupCandidate
 	if options.DeleteOldUpdateFiles {
-		candidates, err := cleanupCandidatesInScope(baseFolder, localDB, options.MoveScanFilesToLibrary)
+		var err error
+		candidates, err = cleanupCandidatesInScope(baseFolder, localDB, options.MoveScanFilesToLibrary)
 		if err != nil {
 			return OrganizationPlan{}, err
 		}
-		plan.Cleanup = candidates
+	}
+	// Each pass can only drop candidates, so this ends after at most one pass
+	// per candidate.
+	for {
+		plan, err := buildOrganizationPlan(baseFolder, localDB, titlesDB, options, candidates)
+		if err != nil {
+			return OrganizationPlan{}, err
+		}
+		kept, err := plan.cleanupKeptInLibrary(baseFolder)
+		if err != nil {
+			return OrganizationPlan{}, err
+		}
+		if len(kept) == len(candidates) {
+			validateOrganizationPlan(&plan)
+			zap.L().Info("Organization plan built",
+				zap.String("library_root", baseFolder),
+				zap.Int("planned_moves", len(plan.Moves)),
+				zap.Int("planned_deletions", len(plan.Cleanup)),
+				zap.Int("conflicts", len(plan.Conflicts)),
+				zap.Bool("rename_files", options.RenameFiles),
+				zap.Bool("create_folder_per_game", options.CreateFolderPerGame),
+				zap.Bool("move_scan_files_to_library", options.MoveScanFilesToLibrary),
+			)
+			return plan, nil
+		}
+		// The planning pass may have treated a dropped file as deleted, so
+		// plan again from the scan's candidates without it.
+		remaining := make([]db.CleanupCandidate, 0, len(kept))
+		for _, index := range kept {
+			remaining = append(remaining, candidates[index])
+		}
+		candidates = remaining
+	}
+}
+
+// cleanupKeptInLibrary returns the indexes of the plan's cleanup candidates
+// whose kept copy is in the library or is moved there by the plan. Deleting
+// any other candidate would leave the library relying on a scan-folder copy,
+// for example when the plan skips a game that has no base file.
+func (plan *OrganizationPlan) cleanupKeptInLibrary(baseFolder string) ([]int, error) {
+	moved := make(map[string]struct{}, len(plan.Moves))
+	for _, move := range plan.Moves {
+		key, err := organizationPathKey(move.Source)
+		if err != nil {
+			return nil, fmt.Errorf("resolve planned move %q: %w", move.Source, err)
+		}
+		moved[key] = struct{}{}
+	}
+	kept := make([]int, 0, len(plan.Cleanup))
+	for index, candidate := range plan.Cleanup {
+		replacement := filepath.Join(candidate.Replacement.BaseFolder, candidate.Replacement.FileName)
+		key, err := organizationPathKey(replacement)
+		if err != nil {
+			return nil, fmt.Errorf("resolve cleanup replacement %q: %w", replacement, err)
+		}
+		if _, ok := moved[key]; !ok {
+			inside, err := organizationPathWithin(baseFolder, candidate.Replacement.BaseFolder)
+			if err != nil {
+				return nil, fmt.Errorf("check cleanup replacement scope: %w", err)
+			}
+			if !inside {
+				zap.L().Info("Kept redundant file because its replacement is not imported",
+					zap.String("file", filepath.Join(candidate.File.BaseFolder, candidate.File.FileName)),
+					zap.String("replacement", replacement),
+				)
+				continue
+			}
+		}
+		kept = append(kept, index)
+	}
+	return kept, nil
+}
+
+// buildOrganizationPlan plans every move for one set of cleanup candidates.
+func buildOrganizationPlan(
+	baseFolder string,
+	localDB *db.LocalSwitchFilesDB,
+	titlesDB *db.SwitchTitlesDB,
+	options settings.OrganizeOptions,
+	candidates []db.CleanupCandidate,
+) (OrganizationPlan, error) {
+	plan := OrganizationPlan{Moves: []OrganizationMove{}, Conflicts: []OrganizationConflict{}}
+	if options.DeleteOldUpdateFiles {
+		// keepDuplicateInPlace rewrites entries, so plan on a copy.
+		plan.Cleanup = append([]db.CleanupCandidate{}, candidates...)
 		plan.pendingCleanup = make(map[string]int, len(candidates))
 		for index, candidate := range candidates {
 			key, err := organizationPathKey(filepath.Join(candidate.File.BaseFolder, candidate.File.FileName))
@@ -213,15 +300,6 @@ func BuildOrganizationPlan(
 		}
 	}
 
-	validateOrganizationPlan(&plan)
-	zap.L().Info("Organization plan built",
-		zap.String("library_root", baseFolder),
-		zap.Int("planned_moves", len(plan.Moves)),
-		zap.Int("conflicts", len(plan.Conflicts)),
-		zap.Bool("rename_files", options.RenameFiles),
-		zap.Bool("create_folder_per_game", options.CreateFolderPerGame),
-		zap.Bool("move_scan_files_to_library", options.MoveScanFilesToLibrary),
-	)
 	return plan, nil
 }
 

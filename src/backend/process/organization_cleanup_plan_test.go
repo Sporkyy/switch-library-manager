@@ -76,6 +76,64 @@ func TestBuildOrganizationPlanLeavesOutFilesCleanupDeletes(t *testing.T) {
 	}
 }
 
+// Cleanup must not delete a library file in favor of a scan-folder copy that
+// the plan leaves where it is. Here the game has no base file, so its updates
+// are not organized and the newer update stays in intake.
+func TestBuildOrganizationPlanKeepsLibraryFileWhenReplacementIsNotImported(t *testing.T) {
+	root := t.TempDir()
+	library := filepath.Join(root, "library")
+	intake := filepath.Join(root, "intake")
+	for _, folder := range []string{library, intake} {
+		if err := os.Mkdir(folder, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const updateID = "0100000000010800"
+	oldPath := filepath.Join(library, "old.nsp")
+	newPath := filepath.Join(intake, "new.nsp")
+	writeFixture(t, oldPath, "old")
+	writeFixture(t, newPath, "new")
+	oldInfo, newInfo := extendedInfoForPath(t, oldPath), extendedInfoForPath(t, newPath)
+	local := &db.LocalSwitchFilesDB{
+		TitlesMap: map[string]*db.SwitchGameFiles{"0100000000010": {
+			LatestUpdate: 2,
+			Updates: map[int]db.SwitchFileInfo{
+				1: {ExtendedInfo: oldInfo, Metadata: metadataForID(updateID, 1)},
+				2: {ExtendedInfo: newInfo, Metadata: metadataForID(updateID, 2)},
+			},
+			Dlc: map[string]db.SwitchFileInfo{},
+		}},
+		CleanupCandidates: []db.CleanupCandidate{{File: oldInfo, Replacement: newInfo, ReasonCode: db.REASON_OLD_UPDATE}},
+	}
+	options := settings.OrganizeOptions{
+		RenameFiles:            true,
+		FileNameTemplate:       "{TITLE_ID} [v{VERSION}]",
+		MoveScanFilesToLibrary: true,
+		DeleteOldUpdateFiles:   true,
+	}
+
+	plan, err := BuildOrganizationPlan(library, local, nil, options)
+	if err != nil || len(plan.Conflicts) != 0 || len(plan.Moves) != 0 {
+		t.Fatalf("plan moves=%v conflicts=%v error=%v; want no moves for a game without a base", plan.Moves, plan.Conflicts, err)
+	}
+	if len(plan.Cleanup) != 0 {
+		t.Fatalf("cleanup = %#v; want the library update kept while its replacement stays in intake", plan.Cleanup)
+	}
+	if err := ExecuteOrganizationPlan(plan, local, library, options, nil); err != nil {
+		t.Fatalf("ExecuteOrganizationPlan() = %v", err)
+	}
+	assertExists(t, oldPath)
+	assertExists(t, newPath)
+
+	// Once the game is processed, the newer update is imported, so the older
+	// library copy can go.
+	options.ProcessWhenMissingBaseGame = true
+	plan, err = BuildOrganizationPlan(library, local, nil, options)
+	if err != nil || len(plan.Conflicts) != 0 || len(plan.Moves) != 1 || plan.Moves[0].Source != newPath || len(plan.Cleanup) != 1 {
+		t.Fatalf("plan moves=%v cleanup=%v conflicts=%v error=%v; want the old update deleted and the new one imported", plan.Moves, plan.Cleanup, plan.Conflicts, err)
+	}
+}
+
 // Three copies of one base file: the scan keeps "a.nsp", but "Game.nsp"
 // already has the organized name. The plan keeps "Game.nsp" in place and
 // deletes the other two, each relying on the copy that survives.

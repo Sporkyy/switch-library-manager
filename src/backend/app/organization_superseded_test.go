@@ -38,6 +38,8 @@ func TestOrganizeLibraryResolvesSupersededAndDuplicateFiles(t *testing.T) {
 		library     []string
 		keepOld     bool
 		wantLibrary []string
+		// wantIntake lists files the run must leave in intake.
+		wantIntake []string
 	}{
 		{
 			name:        "two updates in intake",
@@ -126,6 +128,15 @@ func TestOrganizeLibraryResolvesSupersededAndDuplicateFiles(t *testing.T) {
 			keepOld:     true,
 			wantLibrary: []string{baseOut, updateOut("131072"), updateOut("65536")},
 		},
+		{
+			// Without a base the game is not organized, so the newer update is
+			// not imported and the library must keep its older one.
+			name:        "library update without a base is kept when the newer one is not imported",
+			intake:      []string{"a [" + update + "][v131072].nsp"},
+			library:     []string{updateOut("65536")},
+			wantLibrary: []string{updateOut("65536")},
+			wantIntake:  []string{"a [" + update + "][v131072].nsp"},
+		},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -147,8 +158,8 @@ func TestOrganizeLibraryResolvesSupersededAndDuplicateFiles(t *testing.T) {
 			if got := listTree(t, library); strings.Join(got, "\n") != strings.Join(want, "\n") {
 				t.Errorf("library after organize:\n got %v\nwant %v", got, want)
 			}
-			if got := listTree(t, intake); len(got) != 0 {
-				t.Errorf("intake after organize: got %v, want it emptied", got)
+			if got := listTree(t, intake); strings.Join(got, "\n") != strings.Join(test.wantIntake, "\n") {
+				t.Errorf("intake after organize: got %v, want %v", got, test.wantIntake)
 			}
 			// A file already filed in the library must be the copy that is kept
 			// when the intake folder holds nothing newer.
