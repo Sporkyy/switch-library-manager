@@ -310,6 +310,52 @@ func TestScanFolderAndClassifyFilenameFallback(t *testing.T) {
 	}
 }
 
+// Like the fallback scan test above, these read metadata from filenames and so
+// run before the tests that install process-global keys.
+func TestScanKeepsSupersededDLCRecordInEitherOrder(t *testing.T) {
+	// The walk visits names in order, so the prefix decides which version the
+	// scan classifies first.
+	for _, test := range []struct{ name, older, newer string }{
+		{"older found first", "A DLC [0100000000011001][v2].nsp", "B DLC [0100000000011001][v3].nsp"},
+		{"newer found first", "B DLC [0100000000011001][v2].nsp", "A DLC [0100000000011001][v3].nsp"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base := t.TempDir()
+			library := filepath.Join(base, "library")
+			if err := os.Mkdir(library, 0755); err != nil {
+				t.Fatal(err)
+			}
+			resetDBSettings(t, base, func(s *settings.AppSettings) {})
+			for _, name := range []string{test.older, test.newer} {
+				if err := os.WriteFile(filepath.Join(library, name), []byte("synthetic"), 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			manager, err := NewLocalSwitchDBManager(base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer manager.Close()
+			local, err := manager.CreateLocalSwitchFilesDB([]string{library}, nil, false, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			game := local.TitlesMap["0100000000010"]
+			if game == nil || game.Dlc["0100000000011001"].ExtendedInfo.FileName != test.newer {
+				t.Fatalf("newest DLC was not kept: %#v", game)
+			}
+			if len(game.OlderDlc) != 1 || game.OlderDlc[0].ExtendedInfo.FileName != test.older || game.OlderDlc[0].Metadata.Version != 2 {
+				t.Fatalf("superseded DLC records = %#v, want the older file", game.OlderDlc)
+			}
+			assertSkippedReason(t, local.Skipped, test.older, REASON_OLD_UPDATE)
+			if len(local.CleanupCandidates) != 1 || local.CleanupCandidates[0].File.FileName != test.older ||
+				local.CleanupCandidates[0].Replacement.FileName != test.newer {
+				t.Fatalf("cleanup candidates = %#v, want the older DLC replaced by the newer one", local.CleanupCandidates)
+			}
+		})
+	}
+}
+
 func TestScannerDeduplicatesPhysicalFilesAcrossOverlappingRoots(t *testing.T) {
 	base := t.TempDir()
 	library := filepath.Join(base, "library")

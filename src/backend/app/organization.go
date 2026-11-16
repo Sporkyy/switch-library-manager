@@ -77,18 +77,17 @@ func (a *App) OrganizeLibrary() (OrganizationResult, error) {
 	}
 	var returnErr error
 	changed := false
-	if settingsObj.Organization.DeleteOldUpdateFiles {
-		changed = len(localDB.CleanupCandidates) != 0
-		if err := process.DeleteOldUpdatesAt(a.baseFolder, settingsObj.Paths.LibraryFolder, localDB, progress); err != nil {
-			returnErr = err
-		}
-	}
-	if returnErr == nil && organizationEnabled && len(plan.Moves) != 0 {
-		if err := process.ExecuteOrganizationPlan(plan, localDB, settingsObj.Paths.LibraryFolder, settingsObj.Organization, progress, settingsObj.Paths.ScanFolders...); err != nil {
-			returnErr = err
-		} else {
+	switch {
+	case organizationEnabled:
+		// The plan deletes its cleanup files before moving, so a file is never
+		// both deleted and moved.
+		if len(plan.Moves) != 0 || len(plan.Cleanup) != 0 {
 			changed = true
+			returnErr = process.ExecuteOrganizationPlan(plan, localDB, settingsObj.Paths.LibraryFolder, settingsObj.Organization, progress, settingsObj.Paths.ScanFolders...)
 		}
+	case settingsObj.Organization.DeleteOldUpdateFiles:
+		changed = len(localDB.CleanupCandidates) != 0
+		returnErr = process.DeleteOldUpdatesAt(a.baseFolder, settingsObj.Paths.LibraryFolder, localDB, progress)
 	}
 	if changed || returnErr != nil {
 		if _, refreshErr := a.buildLocalDB(true); refreshErr != nil {

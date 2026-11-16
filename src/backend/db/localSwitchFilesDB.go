@@ -68,10 +68,14 @@ type SwitchFileInfo struct {
 }
 
 type SwitchGameFiles struct {
-	File         SwitchFileInfo
-	BaseExist    bool
-	Updates      map[int]SwitchFileInfo
-	Dlc          map[string]SwitchFileInfo
+	File      SwitchFileInfo
+	BaseExist bool
+	Updates   map[int]SwitchFileInfo
+	Dlc       map[string]SwitchFileInfo
+	// OlderDlc holds standalone DLC files superseded by a newer version in
+	// Dlc. Like old updates, they stay in the library unless cleanup deletes
+	// them.
+	OlderDlc     []SwitchFileInfo
 	MultiContent bool
 	LatestUpdate int
 	IsSplit      bool
@@ -491,11 +495,23 @@ func (ldb *LocalSwitchDBManager) processLocalFiles(files []ExtendedFileInfo,
 				if metadata.Version < dlc.Metadata.Version {
 					skipped[file] = SkippedFile{ReasonCode: REASON_OLD_UPDATE, ReasonText: "old DLC file, newer version exist locally\nnew: " + filepath.Join(dlc.ExtendedInfo.BaseFolder, dlc.ExtendedInfo.FileName) + "\nold:" + filepath.Join(file.BaseFolder, file.FileName)}
 					zap.S().Warnf("-->Old DLC file found [%v] and [%v]", file.FileName, dlc.ExtendedInfo.FileName)
+					if len(contentMap) == 1 {
+						metadata.Type = "DLC"
+						switchTitle.OlderDlc = append(switchTitle.OlderDlc, SwitchFileInfo{ExtendedInfo: file, Metadata: metadata})
+					}
 					continue
 				} else if metadata.Version == dlc.Metadata.Version {
 					skipped[file] = SkippedFile{ReasonCode: REASON_DUPLICATE, ReasonText: "duplicate DLC file\n" + filepath.Join(dlc.ExtendedInfo.BaseFolder, dlc.ExtendedInfo.FileName) + "\n" + filepath.Join(file.BaseFolder, file.FileName)}
 					zap.S().Warnf("-->Duplicate DLC file found [%v] and [%v]", file.FileName, dlc.ExtendedInfo.FileName)
 					continue
+				}
+				// A newer version replaces the record below. Keep a diagnostic
+				// for the superseded standalone file, as for old updates; a
+				// multi-content file is still needed for its other records.
+				if len(fileContents[dlc.ExtendedInfo]) == 1 {
+					switchTitle.OlderDlc = append(switchTitle.OlderDlc, dlc)
+					skipped[dlc.ExtendedInfo] = SkippedFile{ReasonCode: REASON_OLD_UPDATE, ReasonText: "old DLC file, newer version exist locally\nnew: " + filepath.Join(file.BaseFolder, file.FileName) + "\nold:" + filepath.Join(dlc.ExtendedInfo.BaseFolder, dlc.ExtendedInfo.FileName)}
+					zap.S().Warnf("-->Old DLC file found [%v] and [%v]", dlc.ExtendedInfo.FileName, file.FileName)
 				}
 			}
 			//not an update, and not main TitleAttributes, so treat it as a DLC

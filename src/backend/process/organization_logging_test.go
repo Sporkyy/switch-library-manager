@@ -105,3 +105,36 @@ func TestExecuteOrganizationPlanLogsFailureAndStopsRemainingMoves(t *testing.T) 
 		}
 	}
 }
+
+func TestDeleteOldUpdatesLogsWhyEachFileWasDeleted(t *testing.T) {
+	core, observed := observer.New(zap.InfoLevel)
+	t.Cleanup(zap.ReplaceGlobals(zap.New(core)))
+	baseFolder := t.TempDir()
+	library := filepath.Join(baseFolder, "library")
+	mustMkdir(t, library)
+	setProcessSettings(t, baseFolder, settings.OrganizeOptions{})
+	paths := map[string]string{}
+	for _, name := range []string{"old.nsp", "duplicate.nsp", "kept.nsp"} {
+		paths[name] = filepath.Join(library, name)
+		writeFixture(t, paths[name], name)
+	}
+	kept := extendedInfoForPath(t, paths["kept.nsp"])
+	local := &db.LocalSwitchFilesDB{CleanupCandidates: []db.CleanupCandidate{
+		{File: extendedInfoForPath(t, paths["old.nsp"]), Replacement: kept, ReasonCode: db.REASON_OLD_UPDATE},
+		{File: extendedInfoForPath(t, paths["duplicate.nsp"]), Replacement: kept, ReasonCode: db.REASON_DUPLICATE},
+	}}
+	if err := DeleteOldUpdatesAt(baseFolder, library, local, nil); err != nil {
+		t.Fatalf("DeleteOldUpdatesAt() = %v", err)
+	}
+	want := map[string]string{paths["old.nsp"]: "older version", paths["duplicate.nsp"]: "duplicate"}
+	entries := observed.FilterMessage("Deleted redundant file").All()
+	if len(entries) != len(want) {
+		t.Fatalf("deletion log entries = %d, want %d: %#v", len(entries), len(want), observed.All())
+	}
+	for _, entry := range entries {
+		fields := entry.ContextMap()
+		if fields["reason"] != want[fields["file"].(string)] || fields["kept"] != paths["kept.nsp"] {
+			t.Errorf("deletion log fields = %#v", fields)
+		}
+	}
+}

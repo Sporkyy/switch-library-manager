@@ -119,8 +119,9 @@ func (a *App) buildLocalDB(ignoreCache bool) (*db.LocalSwitchFilesDB, error) {
 	if err != nil {
 		return nil, err
 	}
-	scanFolders := append([]string{}, settingsObj.Paths.ScanFolders...)
-	scanFolders = append(scanFolders, settingsObj.Paths.LibraryFolder)
+	// The library is scanned first so that, of two files with the same
+	// content, the copy already filed in the library is the one kept.
+	scanFolders := append([]string{settingsObj.Paths.LibraryFolder}, settingsObj.Paths.ScanFolders...)
 	localDB, err := a.localDbManager.CreateLocalSwitchFilesDB(
 		scanFolders,
 		progressReporter{app: a},

@@ -19,19 +19,21 @@ func TestOrganizeLibraryConflictCancelsCleanupAndReportsIssue(t *testing.T) {
 	}
 	baseID := "0100000000010000"
 	primaryPath := filepath.Join(library, "A Base ["+baseID+"][v0].nsp")
-	duplicatePath := filepath.Join(library, "Game ["+baseID+"][v0].nsp")
-	if err := os.WriteFile(primaryPath, []byte("primary base"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(duplicatePath, []byte("duplicate base"), 0644); err != nil {
-		t.Fatal(err)
+	duplicatePath := filepath.Join(library, "B Copy ["+baseID+"][v0].nsp")
+	// The organized name is taken by a file the scan does not recognize, so
+	// nothing will free it and the plan must stop before cleanup runs.
+	occupantPath := filepath.Join(library, "Game.nsp")
+	for path, contents := range map[string]string{primaryPath: "primary base", duplicatePath: "duplicate base", occupantPath: "unrelated file"} {
+		if err := os.WriteFile(path, []byte(contents), 0644); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := settings.SaveSettingsWithError(&settings.AppSettings{
 		Paths: settings.PathSettings{LibraryFolder: library, ScanFolders: []string{}},
 		Scan:  settings.ScanSettings{IgnoreFileTypes: []string{}},
 		Organization: settings.OrganizeOptions{
 			RenameFiles:          true,
-			FileNameTemplate:     "{TITLE_NAME} [{TITLE_ID}][v0]",
+			FileNameTemplate:     "{TITLE_NAME}",
 			DeleteOldUpdateFiles: true,
 		},
 	}, base); err != nil {
@@ -67,7 +69,7 @@ func TestOrganizeLibraryConflictCancelsCleanupAndReportsIssue(t *testing.T) {
 	if len(result.Library.LibraryData) == 0 {
 		t.Fatal("OrganizeLibrary() did not return the scanned library with its blocked result")
 	}
-	for path, want := range map[string]string{primaryPath: "primary base", duplicatePath: "duplicate base"} {
+	for path, want := range map[string]string{primaryPath: "primary base", duplicatePath: "duplicate base", occupantPath: "unrelated file"} {
 		content, err := os.ReadFile(path)
 		if err != nil || string(content) != want {
 			t.Fatalf("file %q changed despite preflight conflict: content=%q err=%v", path, content, err)
@@ -78,7 +80,7 @@ func TestOrganizeLibraryConflictCancelsCleanupAndReportsIssue(t *testing.T) {
 	}
 	foundConflict := false
 	for _, issue := range result.Library.Issues {
-		if strings.Contains(issue.Value, "organization conflict") && strings.Contains(issue.Value, duplicatePath) {
+		if strings.Contains(issue.Value, "organization conflict") && strings.Contains(issue.Value, occupantPath) {
 			foundConflict = true
 			break
 		}

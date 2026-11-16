@@ -43,12 +43,83 @@ func DeleteOldUpdatesAt(baseFolder, cleanupRoot string, localDB *db.LocalSwitchF
 	if cleanupRoot == "" {
 		cleanupRoot = settingsObj.Paths.LibraryFolder
 	}
-	importing := settingsObj.Organization.MoveScanFilesToLibrary
+	candidates, err := cleanupCandidatesInScope(cleanupRoot, localDB, settingsObj.Organization.MoveScanFilesToLibrary)
+	if err != nil {
+		return err
+	}
+	removed, err := deleteCleanupCandidates(candidates, localDB, updateProgress)
+	if err != nil {
+		return err
+	}
+	localDB.CleanupCandidates = nil
+	if removed > 0 && settingsObj.Organization.DeleteEmptyFolders && cleanupRoot != "" {
+		if err := deleteEmptyOrganizationFolders(cleanupRoot, settingsObj.Paths.ScanFolders); err != nil {
+			return fmt.Errorf("delete empty folders: %w", err)
+		}
+	}
+	return nil
+}
+
+// deleteCleanupCandidates deletes each candidate after confirming that it and
+// its replacement are unchanged since the scan. It stops at the first failure
+// and returns how many files it deleted.
+func deleteCleanupCandidates(candidates []db.CleanupCandidate, localDB *db.LocalSwitchFilesDB, updateProgress db.ProgressUpdater) (int, error) {
+	removed := 0
+	for _, candidate := range candidates {
+		source := filepath.Join(candidate.File.BaseFolder, candidate.File.FileName)
+		replacement := filepath.Join(candidate.Replacement.BaseFolder, candidate.Replacement.FileName)
+		sourceInfo, err := os.Lstat(source)
+		if err != nil {
+			return removed, fmt.Errorf("verify cleanup candidate %q: %w", source, err)
+		}
+		if !sourceInfo.Mode().IsRegular() || sourceInfo.Size() != candidate.File.Size || !sourceInfo.ModTime().Equal(candidate.File.ModTime) {
+			return removed, fmt.Errorf("cleanup candidate %q changed after scanning", source)
+		}
+		replacementInfo, err := os.Lstat(replacement)
+		if err != nil {
+			return removed, fmt.Errorf("verify replacement %q for %q: %w", replacement, source, err)
+		}
+		if !replacementInfo.Mode().IsRegular() || replacementInfo.Size() != candidate.Replacement.Size || !replacementInfo.ModTime().Equal(candidate.Replacement.ModTime) {
+			return removed, fmt.Errorf("replacement %q for cleanup candidate %q changed after scanning", replacement, source)
+		}
+		if os.SameFile(sourceInfo, replacementInfo) {
+			continue
+		}
+		if updateProgress != nil {
+			updateProgress.UpdateProgress(removed+1, len(candidates), "deleting "+source)
+		}
+		if err := os.Remove(source); err != nil {
+			return removed, fmt.Errorf("delete redundant file %q: %w", source, err)
+		}
+		if localDB != nil {
+			deleteSkippedPath(localDB, candidate.File)
+		}
+		removed++
+		zap.L().Info("Deleted redundant file",
+			zap.String("file", source),
+			zap.String("reason", cleanupReasonText(candidate.ReasonCode)),
+			zap.String("kept", replacement),
+		)
+	}
+	return removed, nil
+}
+
+func cleanupReasonText(reasonCode int) string {
+	if reasonCode == db.REASON_OLD_UPDATE {
+		return "older version"
+	}
+	return "duplicate"
+}
+
+// cleanupCandidatesInScope returns, in path order, the scanned candidates that
+// cleanup may delete. Organization planning uses the same list so that it
+// never plans a move for a file cleanup removes first.
+func cleanupCandidatesInScope(libraryRoot string, localDB *db.LocalSwitchFilesDB, importing bool) ([]db.CleanupCandidate, error) {
 	candidates := make([]db.CleanupCandidate, 0, len(localDB.CleanupCandidates))
 	for _, candidate := range localDB.CleanupCandidates {
-		allowed, err := cleanupCandidateInScope(cleanupRoot, candidate, importing)
+		allowed, err := cleanupCandidateInScope(libraryRoot, candidate, importing)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if allowed {
 			candidates = append(candidates, candidate)
@@ -59,44 +130,7 @@ func DeleteOldUpdatesAt(baseFolder, cleanupRoot string, localDB *db.LocalSwitchF
 		right := filepath.Join(candidates[j].File.BaseFolder, candidates[j].File.FileName)
 		return left < right
 	})
-	removed := 0
-	for _, candidate := range candidates {
-		source := filepath.Join(candidate.File.BaseFolder, candidate.File.FileName)
-		replacement := filepath.Join(candidate.Replacement.BaseFolder, candidate.Replacement.FileName)
-		sourceInfo, err := os.Lstat(source)
-		if err != nil {
-			return fmt.Errorf("verify cleanup candidate %q: %w", source, err)
-		}
-		if !sourceInfo.Mode().IsRegular() || sourceInfo.Size() != candidate.File.Size || !sourceInfo.ModTime().Equal(candidate.File.ModTime) {
-			return fmt.Errorf("cleanup candidate %q changed after scanning", source)
-		}
-		replacementInfo, err := os.Lstat(replacement)
-		if err != nil {
-			return fmt.Errorf("verify replacement %q for %q: %w", replacement, source, err)
-		}
-		if !replacementInfo.Mode().IsRegular() || replacementInfo.Size() != candidate.Replacement.Size || !replacementInfo.ModTime().Equal(candidate.Replacement.ModTime) {
-			return fmt.Errorf("replacement %q for cleanup candidate %q changed after scanning", replacement, source)
-		}
-		if os.SameFile(sourceInfo, replacementInfo) {
-			continue
-		}
-		if updateProgress != nil {
-			updateProgress.UpdateProgress(removed+1, len(candidates), "deleting "+source)
-		}
-		if err := os.Remove(source); err != nil {
-			return fmt.Errorf("delete verified duplicate %q: %w", source, err)
-		}
-		deleteSkippedPath(localDB, candidate.File)
-		removed++
-		zap.S().Infof("Deleted verified duplicate file: %s", source)
-	}
-	localDB.CleanupCandidates = nil
-	if removed > 0 && settingsObj.Organization.DeleteEmptyFolders && cleanupRoot != "" {
-		if err := deleteEmptyOrganizationFolders(cleanupRoot, settingsObj.Paths.ScanFolders); err != nil {
-			return fmt.Errorf("delete empty folders: %w", err)
-		}
-	}
-	return nil
+	return candidates, nil
 }
 
 // cleanupCandidateInScope keeps scan folders read-only. Unless scan files are

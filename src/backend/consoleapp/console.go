@@ -163,8 +163,9 @@ func (c *Console) Start() {
 	}
 	defer localDbManager.Close()
 
-	scanFolders := settingsObj.Paths.ScanFolders
-	scanFolders = append(scanFolders, folderToScan)
+	// The library is scanned first so that, of two files with the same
+	// content, the copy already filed in the library is the one kept.
+	scanFolders := append([]string{folderToScan}, settingsObj.Paths.ScanFolders...)
 
 	localDB, err := localDbManager.CreateLocalSwitchFilesDB(scanFolders, c, recursiveMode, true)
 	if err != nil {
@@ -206,16 +207,21 @@ func (c *Console) Start() {
 	}
 	if canMutate && destructiveEnabled {
 		operationErr := error(nil)
-		if settingsObj.Organization.DeleteOldUpdateFiles {
+		if organizationEnabled {
+			// The plan deletes its cleanup files before moving, so a file is
+			// never both deleted and moved.
+			progressBar = progressbar.New(2000)
+			if len(organizationPlan.Cleanup) != 0 {
+				fmt.Printf("\nDeleting %d verified duplicate and old file(s), then organizing the library\n", len(organizationPlan.Cleanup))
+			} else {
+				fmt.Printf("\nStarting library organization\n")
+			}
+			operationErr = process.ExecuteOrganizationPlan(organizationPlan, localDB, folderToScan, settingsObj.Organization, c, settingsObj.Paths.ScanFolders...)
+			progressBar.Finish()
+		} else if settingsObj.Organization.DeleteOldUpdateFiles {
 			progressBar = progressbar.New(2000)
 			fmt.Printf("\nDeleting verified duplicate and old files\n")
 			operationErr = process.DeleteOldUpdatesAt(c.baseFolder, folderToScan, localDB, c)
-			progressBar.Finish()
-		}
-		if operationErr == nil && organizationEnabled {
-			progressBar = progressbar.New(2000)
-			fmt.Printf("\nStarting library organization\n")
-			operationErr = process.ExecuteOrganizationPlan(organizationPlan, localDB, folderToScan, settingsObj.Organization, c, settingsObj.Paths.ScanFolders...)
 			progressBar.Finish()
 		}
 		if operationErr != nil {

@@ -89,7 +89,7 @@ On macOS, runtime files are stored in `~/Library/Application Support/Switch Libr
 | `organization.updates_folder`                 | string       | `""`                                                  | Optional subfolder for update files.                                                                                                                                                                                         |
 | `organization.rename_files`                   | boolean      | `false`                                               | Renames files using `file_name_template`.                                                                                                                                                                                    |
 | `organization.delete_empty_folders`           | boolean      | `false`                                               | Removes empty folders inside the library folder after files were moved or old updates were deleted. Scan folders are never cleaned.                                                                                          |
-| `organization.delete_old_update_files`        | boolean      | `false`                                               | Deletes verified duplicate and old update files. Files in scan folders are only deleted when `move_scan_files_to_library` is enabled.                                                                                        |
+| `organization.delete_old_update_files`        | boolean      | `false`                                               | Deletes verified duplicate files and older versions of updates and DLC. Files in scan folders are only deleted when `move_scan_files_to_library` is enabled. See [Duplicates and older versions](#duplicates-and-older-versions). |
 | `organization.folder_name_template`           | string       | `"{TITLE_NAME}"`                                      | Template used for game folder names.                                                                                                                                                                                         |
 | `organization.allow_unicode_file_names`       | boolean      | `false`                                               | Accepts catalog titles in any script for library display, game details, and naming; preserves Unicode in generated filenames and game folders. When off, uses legacy title selection, romanization, and character filtering. |
 | `organization.file_name_template`             | string       | `"{TITLE_NAME} ({DLC_NAME})[{TITLE_ID}][v{VERSION}]"` | Template used when renaming files. See the [naming template guide](naming.md) for available tokens and examples.                                                                                                             |
@@ -121,6 +121,13 @@ Organization only ever builds destinations inside `paths.library_folder` (or the
 With `move_scan_files_to_library` off (the default), folders in `paths.scan_folders` are read-only: their files appear in the library views, but Organize never moves, renames, or deletes them, and empty-folder cleanup does not touch them. A scan folder nested inside the library folder is treated as part of the library, although the configured folder itself is never removed.
 
 When `move_scan_files_to_library` is enabled, Organize imports recognized Switch files from outside the library into it, applying the active settings: per-game folders, renaming, and Updates/DLC folders. Without per-game folders, imported files are placed directly in the library folder. Verified duplicate or old files in scan folders may then be deleted by `delete_old_update_files`, but empty folders left behind in scan folders are kept.
+
+### Duplicates and older versions
+
+When the library and the scan folders hold more than one copy of the same title, the copy already in the library is kept. Among several versions of an update or DLC, the newest is current.
+
+- With `delete_old_update_files` on, Organize first deletes the duplicates and older versions, then moves the remaining files. If a duplicate already has the name Organize would give the kept copy, and both are the same size, Organize keeps that file and deletes the other copy instead of moving it.
+- With `delete_old_update_files` off, older versions of updates and DLC are organized alongside the newest one, so `file_name_template` needs `{VERSION}` to keep their names apart. Exact duplicates are not moved and are listed under Issues.
 
 ## Internal cache
 

@@ -36,6 +36,13 @@ type OrganizationConflict struct {
 type OrganizationPlan struct {
 	Moves     []OrganizationMove
 	Conflicts []OrganizationConflict
+	// Cleanup lists the redundant files ExecuteOrganizationPlan deletes before
+	// it runs the moves. It is empty unless DeleteOldUpdateFiles is enabled.
+	Cleanup []db.CleanupCandidate
+
+	// pendingCleanup maps the path key of each Cleanup file to its index.
+	// Those files are never planned as moves.
+	pendingCleanup map[string]int
 }
 
 // OrganizationConflictsError marks a plan rejected before any filesystem
@@ -52,6 +59,12 @@ func (e *OrganizationConflictsError) Error() string {
 // creating directories or changing library files. Files outside baseFolder,
 // such as those in scan folders, are left untouched unless
 // MoveScanFilesToLibrary imports them into baseFolder.
+//
+// With DeleteOldUpdateFiles enabled the plan also deletes the scan's in-scope
+// cleanup candidates, before any move. Those files are not moved, and a
+// destination one of them occupies is free once cleanup has run. When the
+// occupant is an exact duplicate of the file planned to replace it, the plan
+// keeps the occupant and deletes the other copy instead of moving it.
 func BuildOrganizationPlan(
 	baseFolder string,
 	localDB *db.LocalSwitchFilesDB,
@@ -66,6 +79,21 @@ func BuildOrganizationPlan(
 	}
 
 	plan := OrganizationPlan{Moves: []OrganizationMove{}, Conflicts: []OrganizationConflict{}}
+	if options.DeleteOldUpdateFiles {
+		candidates, err := cleanupCandidatesInScope(baseFolder, localDB, options.MoveScanFilesToLibrary)
+		if err != nil {
+			return OrganizationPlan{}, err
+		}
+		plan.Cleanup = candidates
+		plan.pendingCleanup = make(map[string]int, len(candidates))
+		for index, candidate := range candidates {
+			key, err := organizationPathKey(filepath.Join(candidate.File.BaseFolder, candidate.File.FileName))
+			if err != nil {
+				return OrganizationPlan{}, fmt.Errorf("resolve cleanup candidate %q: %w", candidate.File.FileName, err)
+			}
+			plan.pendingCleanup[key] = index
+		}
+	}
 	keys := make([]string, 0, len(localDB.TitlesMap))
 	for key := range localDB.TitlesMap {
 		keys = append(keys, key)
@@ -162,13 +190,8 @@ func BuildOrganizationPlan(
 			}
 		}
 
-		dlcIDs := make([]string, 0, len(game.Dlc))
-		for id := range game.Dlc {
-			dlcIDs = append(dlcIDs, id)
-		}
-		sort.Strings(dlcIDs)
-		for _, id := range dlcIDs {
-			dlc := game.Dlc[id]
+		for _, entry := range organizationDlcFiles(game) {
+			id, dlc := entry.id, entry.file
 			if game.BaseExist && samePhysicalFilePath(game.File.ExtendedInfo, dlc.ExtendedInfo) {
 				continue
 			}
@@ -200,6 +223,34 @@ func BuildOrganizationPlan(
 		zap.Bool("move_scan_files_to_library", options.MoveScanFilesToLibrary),
 	)
 	return plan, nil
+}
+
+type organizationDlcFile struct {
+	id   string
+	file db.SwitchFileInfo
+}
+
+// organizationDlcFiles lists the game's current DLC by title ID, followed by
+// superseded DLC versions by path. Superseded versions are organized like old
+// updates; cleanup, when enabled, deletes them before the moves run.
+func organizationDlcFiles(game *db.SwitchGameFiles) []organizationDlcFile {
+	files := make([]organizationDlcFile, 0, len(game.Dlc)+len(game.OlderDlc))
+	for id, dlc := range game.Dlc {
+		files = append(files, organizationDlcFile{id: id, file: dlc})
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].id < files[j].id })
+	older := make([]organizationDlcFile, 0, len(game.OlderDlc))
+	for _, dlc := range game.OlderDlc {
+		if dlc.Metadata == nil {
+			continue
+		}
+		older = append(older, organizationDlcFile{id: strings.ToLower(dlc.Metadata.TitleId), file: dlc})
+	}
+	sort.Slice(older, func(i, j int) bool {
+		return filepath.Join(older[i].file.ExtendedInfo.BaseFolder, older[i].file.ExtendedInfo.FileName) <
+			filepath.Join(older[j].file.ExtendedInfo.BaseFolder, older[j].file.ExtendedInfo.FileName)
+	})
+	return append(files, older...)
 }
 
 func addSplitMoves(plan *OrganizationPlan, seenSources map[string]struct{}, firstPartName, sourceFolder, destinationFolder string) error {
@@ -236,6 +287,9 @@ func addOrganizationMove(plan *OrganizationPlan, seenSources map[string]struct{}
 		return nil
 	}
 	seenSources[sourceKey] = struct{}{}
+	if _, pending := plan.pendingCleanup[sourceKey]; pending {
+		return nil
+	}
 
 	info, err := os.Lstat(source)
 	if err != nil {
@@ -260,14 +314,52 @@ func addOrganizationMove(plan *OrganizationPlan, seenSources map[string]struct{}
 		if os.SameFile(info, destinationInfo) {
 			return nil
 		}
-		plan.Conflicts = append(plan.Conflicts, OrganizationConflict{Source: source, Destination: destination, OtherSource: destination, Reason: "destination already exists"})
-		return nil
+		destinationKey, keyErr := organizationPathKey(destination)
+		index, pending := plan.pendingCleanup[destinationKey]
+		if keyErr != nil || !pending {
+			plan.Conflicts = append(plan.Conflicts, OrganizationConflict{Source: source, Destination: destination, OtherSource: destination, Reason: "destination already exists"})
+			return nil
+		}
+		if plan.keepDuplicateInPlace(index, sourceKey, destinationKey) {
+			return nil
+		}
+		// Cleanup deletes the occupant before this move runs.
 	} else if !os.IsNotExist(statErr) {
 		plan.Conflicts = append(plan.Conflicts, OrganizationConflict{Source: source, Destination: destination, Reason: "cannot inspect destination: " + statErr.Error()})
 		return nil
 	}
 	plan.Moves = append(plan.Moves, OrganizationMove{Source: source, Destination: destination, SourceSize: info.Size(), SourceStamp: info})
 	return nil
+}
+
+// keepDuplicateInPlace reverses a cleanup decision when the file cleanup would
+// delete already has the name organization gives the file it keeps, and the
+// two are exact duplicates of the same size. Keeping the occupant avoids
+// deleting it and then moving, or on some shares copying, the other file into
+// its place. It reports whether the move of the kept file is no longer needed.
+func (plan *OrganizationPlan) keepDuplicateInPlace(index int, sourceKey, destinationKey string) bool {
+	candidate := plan.Cleanup[index]
+	if candidate.ReasonCode != db.REASON_DUPLICATE || candidate.File.Size != candidate.Replacement.Size {
+		return false
+	}
+	replacementKey, err := organizationPathKey(filepath.Join(candidate.Replacement.BaseFolder, candidate.Replacement.FileName))
+	if err != nil || replacementKey != sourceKey {
+		return false
+	}
+	plan.Cleanup[index] = db.CleanupCandidate{File: candidate.Replacement, Replacement: candidate.File, ReasonCode: db.REASON_DUPLICATE}
+	delete(plan.pendingCleanup, destinationKey)
+	plan.pendingCleanup[sourceKey] = index
+	// Other files deleted in favor of the source now rely on the occupant.
+	for other := range plan.Cleanup {
+		if other == index {
+			continue
+		}
+		otherKey, err := organizationPathKey(filepath.Join(plan.Cleanup[other].Replacement.BaseFolder, plan.Cleanup[other].Replacement.FileName))
+		if err == nil && otherKey == sourceKey {
+			plan.Cleanup[other].Replacement = candidate.File
+		}
+	}
+	return true
 }
 
 func organizationDestinationParentConflict(destination string) (string, error) {
@@ -471,16 +563,19 @@ func resolveOrganizationPath(path string) (string, error) {
 }
 
 // ExecuteOrganizationPlan applies a previously validated plan and refuses to
-// replace destinations that appear after preflight. Empty-folder cleanup runs
+// replace destinations that appear after preflight. The plan's Cleanup files
+// are deleted first, then the moves run. Empty-folder cleanup runs
 // inside baseFolder only; scanFolders nested inside it are kept.
 func ExecuteOrganizationPlan(plan OrganizationPlan, localDB *db.LocalSwitchFilesDB, baseFolder string, options settings.OrganizeOptions, progress db.ProgressUpdater, scanFolders ...string) (retErr error) {
-	completed := 0
+	completed, deleted := 0, 0
 	defer func() {
 		if retErr != nil {
 			zap.L().Error("Organization failed",
 				zap.String("library_root", baseFolder),
 				zap.Int("completed_moves", completed),
 				zap.Int("planned_moves", len(plan.Moves)),
+				zap.Int("deleted_files", deleted),
+				zap.Int("planned_deletions", len(plan.Cleanup)),
 				zap.Error(retErr),
 			)
 		}
@@ -488,7 +583,17 @@ func ExecuteOrganizationPlan(plan OrganizationPlan, localDB *db.LocalSwitchFiles
 	if len(plan.Conflicts) > 0 {
 		return &OrganizationConflictsError{Conflicts: plan.Conflicts}
 	}
-	if len(plan.Moves) == 0 {
+	if len(plan.Cleanup) > 0 {
+		var err error
+		deleted, err = deleteCleanupCandidates(plan.Cleanup, localDB, progress)
+		if err != nil {
+			return err
+		}
+		if localDB != nil {
+			localDB.CleanupCandidates = nil
+		}
+	}
+	if len(plan.Moves) == 0 && deleted == 0 {
 		return nil
 	}
 	for i, move := range plan.Moves {
@@ -551,6 +656,9 @@ func updateLocalFilePaths(localDB *db.LocalSwitchFilesDB, source, destination st
 		for id, item := range game.Dlc {
 			update(&item.ExtendedInfo)
 			game.Dlc[id] = item
+		}
+		for i := range game.OlderDlc {
+			update(&game.OlderDlc[i].ExtendedInfo)
 		}
 	}
 	return nil
