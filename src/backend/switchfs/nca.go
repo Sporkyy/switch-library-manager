@@ -76,6 +76,13 @@ func openMetaNcaDataSection(reader io.ReaderAt, ncaOffset int64) (*fsHeader, []b
 	if entry.Size == 0 {
 		return nil, nil, errors.New("empty or invalid section")
 	}
+	hashInfo, err := fsHeader.getHashInfo()
+	if err != nil {
+		return nil, nil, err
+	}
+	if hashInfo.pfs0HeaderOffset >= uint64(entry.Size) {
+		return nil, nil, fmt.Errorf("NCA data offset outside section: %#x in %#x bytes", hashInfo.pfs0HeaderOffset, entry.Size)
+	}
 	if uint64(entry.StartOffset) > uint64(^uint64(0)>>1) || ncaOffset > int64(^uint64(0)>>1)-int64(entry.StartOffset) {
 		return nil, nil, errors.New("NCA section offset overflows")
 	}
@@ -101,11 +108,6 @@ func openMetaNcaDataSection(reader io.ReaderAt, ncaOffset int64) (*fsHeader, []b
 	default:
 		return nil, nil, fmt.Errorf("non supported encryption type [encryption type:%d]", fsHeader.encType)
 	}
-	hashInfo, err := fsHeader.getHashInfo()
-	if err != nil {
-		return nil, nil, err
-	}
-
 	return fsHeader, decoded[hashInfo.pfs0HeaderOffset:], nil
 }
 
@@ -141,7 +143,7 @@ func decryptAesCtr(ncaHeader *ncaHeader, fsHeader *fsHeader, offset uint32, size
 	}
 
 	counter := make([]byte, 0x10)
-	binary.BigEndian.PutUint64(counter, uint64(fsHeader.generation))
+	binary.BigEndian.PutUint64(counter, fsHeader.upperCounter)
 	binary.BigEndian.PutUint64(counter[8:], uint64(offset/0x10))
 
 	c, err := aes.NewCipher(decKey)

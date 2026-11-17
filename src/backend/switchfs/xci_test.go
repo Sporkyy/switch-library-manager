@@ -63,7 +63,8 @@ func TestReadXciMetadataSynthetic(t *testing.T) {
 	inner := makePFS0(pfs0Magic, []string{"meta.cnmt"}, [][]byte{cnmt})
 	inner = append(inner, make([]byte, (-len(inner))&0x1ff)...)
 	metaNCA := makeSyntheticNCA(t, inner, 0)
-	controlNCA := makeSyntheticNCA(t, makeRomfsSection(t, "control.nacp"), 0)
+	// A nonzero secure value must survive section decryption for NACP extraction.
+	controlNCA := makeSyntheticNCAWithCounter(t, makeRomfsSection(t, "control.nacp"), 0, 0x01000000_00000001)
 	controlName := "000102030405060708090a0b0c0d0e0f.nca"
 	secure := makePFS0(pfs0Magic, []string{"meta.cnmt.nca", controlName}, [][]byte{metaNCA, controlNCA})
 	root := makePFS0(hfs0Magic, []string{"secure"}, [][]byte{secure})

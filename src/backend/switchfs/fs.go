@@ -12,7 +12,9 @@ type fsHeader struct {
 	fsType        byte //(0 = RomFs, 1 = PartitionFs)
 	hashType      byte // (0 = Auto, 2 = HierarchicalSha256, 3 = HierarchicalIntegrity (Ivfc))
 	fsHeaderBytes []byte
-	generation    uint32
+	// upperCounter is the upper half of the section's AES-CTR counter: the
+	// generation in its low 32 bits and the secure value in its high 32 bits.
+	upperCounter uint64
 }
 
 type fsEntry struct {
@@ -75,8 +77,7 @@ func getFsHeader(ncaHeader *ncaHeader, index int) (*fsHeader, error) {
 	result.hashType = fsHeaderBytes[0x3:0x4][0]
 	result.encType = fsHeaderBytes[0x4:0x5][0]
 
-	generationBytes := fsHeaderBytes[0x140 : 0x140+0x4] //generation
-	result.generation = binary.LittleEndian.Uint32(generationBytes)
+	result.upperCounter = binary.LittleEndian.Uint64(fsHeaderBytes[0x140 : 0x140+0x8])
 
 	return &result, nil
 }

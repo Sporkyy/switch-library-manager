@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/trembon/switch-library-manager/backend/settings"
@@ -195,6 +196,16 @@ func TestOpenMetaNcaDataSectionSupportsUnencryptedSections(t *testing.T) {
 	}
 }
 
+func TestOpenMetaNcaDataSectionRejectsOutOfRangeDataOffset(t *testing.T) {
+	section := make([]byte, 0x200)
+	nca := mutateSyntheticNCAHeader(t, makeSyntheticNCA(t, section, 1), func(header []byte) {
+		binary.LittleEndian.PutUint64(header[0x440:], uint64(len(section))+1)
+	})
+	if _, _, err := openMetaNcaDataSection(bytes.NewReader(nca), 0); err == nil || !strings.Contains(err.Error(), "data offset outside section") {
+		t.Fatalf("openMetaNcaDataSection() error = %v, want an out-of-range data offset error", err)
+	}
+}
+
 func TestDecryptAesCtrSuccessAndTruncation(t *testing.T) {
 	initTestKeys(t)
 	plain := bytes.Repeat([]byte("ctr"), 32)
@@ -206,11 +217,11 @@ func TestDecryptAesCtrSuccessAndTruncation(t *testing.T) {
 		t.Fatal(err)
 	}
 	block.Encrypt(nca.encryptedKeys[0x20:0x30], contentKey)
-	fs := &fsHeader{generation: 9}
+	fs := &fsHeader{upperCounter: 9}
 	if got := nca.getKeyRevision(); got != 2 {
 		t.Fatalf("unexpected key revision: %d", got)
 	}
-	encrypted := cryptCtr(t, contentKey, fs.generation, 0x30, plain)
+	encrypted := cryptCtr(t, contentKey, fs.upperCounter, 0x30, plain)
 	decoded, err := decryptAesCtr(nca, fs, 0x30, uint32(len(plain)), encrypted)
 	if err != nil || !bytes.Equal(decoded, plain) {
 		t.Fatalf("CTR decryption failed: %v", err)
@@ -249,6 +260,14 @@ func initTestKeys(t *testing.T) {
 
 func makeSyntheticNCA(t *testing.T, section []byte, fsType byte) []byte {
 	t.Helper()
+	return makeSyntheticNCAWithCounter(t, section, fsType, 1)
+}
+
+// makeSyntheticNCAWithCounter builds an NCA whose section counter has the
+// given upper half: the generation in its low 32 bits and the secure value in
+// its high 32 bits, stored little-endian at FS header offset 0x140.
+func makeSyntheticNCAWithCounter(t *testing.T, section []byte, fsType byte, upperCounter uint64) []byte {
+	t.Helper()
 	if len(section)%0x200 != 0 {
 		t.Fatalf("synthetic NCA section is not sector aligned: %d", len(section))
 	}
@@ -263,25 +282,25 @@ func makeSyntheticNCA(t *testing.T, section []byte, fsType byte) []byte {
 	header[0x402] = fsType
 	header[0x403] = 2
 	header[0x404] = 3
-	binary.LittleEndian.PutUint32(header[0x540:], 1)
+	binary.LittleEndian.PutUint64(header[0x540:], upperCounter)
 	binary.LittleEndian.PutUint64(header[0x440:], 0)
 	binary.LittleEndian.PutUint64(header[0x448:], uint64(len(section)))
 	fsHash := sha256.Sum256(header[0x400:0x600])
 	copy(header[0x280:], fsHash[:])
 	areaCipher.Encrypt(header[0x320:0x330], contentKey)
 	encryptedHeader := encryptNcaHeader(header, testHeaderKey)
-	encodedSection := cryptCtr(t, contentKey, 1, 0xc00, section)
+	encodedSection := cryptCtr(t, contentKey, upperCounter, 0xc00, section)
 	return append(encryptedHeader, encodedSection...)
 }
 
-func cryptCtr(t *testing.T, key []byte, generation uint32, offset uint32, data []byte) []byte {
+func cryptCtr(t *testing.T, key []byte, upperCounter uint64, offset uint32, data []byte) []byte {
 	t.Helper()
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	counter := make([]byte, 0x10)
-	binary.BigEndian.PutUint64(counter, uint64(generation))
+	binary.BigEndian.PutUint64(counter, upperCounter)
 	binary.BigEndian.PutUint64(counter[8:], uint64(offset/0x10))
 	result := make([]byte, len(data))
 	cipher.NewCTR(block, counter).XORKeyStream(result, data)
