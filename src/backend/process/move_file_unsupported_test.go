@@ -13,9 +13,12 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
+// unsupportedRenameTestOperations models a filesystem that supports neither
+// exclusive nor plain rename, so moves take the exclusive-create copy path.
 func unsupportedRenameTestOperations() organizationFileOperations {
 	operations := defaultOrganizationFileOperations()
 	operations.renameNoReplace = func(string, string) error { return errors.ErrUnsupported }
+	operations.rename = func(string, string) error { return errors.ErrUnsupported }
 	return operations
 }
 
@@ -384,6 +387,21 @@ func identityChangingOperations(destination string, operations organizationFileO
 	return operations
 }
 
+// crossDeviceDirectCopyTestOperations models a move onto another filesystem
+// that lacks exclusive rename, which copies straight to an exclusively created
+// destination. Same-filesystem moves rename over a placeholder instead.
+func crossDeviceDirectCopyTestOperations(source string) organizationFileOperations {
+	operations := crossDeviceTestOperations(source)
+	rename := operations.renameNoReplace
+	operations.renameNoReplace = func(from, to string) error {
+		if from == source {
+			return rename(from, to)
+		}
+		return errors.ErrUnsupported
+	}
+	return operations
+}
+
 type unstableIdentityInfo struct{ os.FileInfo }
 
 func (unstableIdentityInfo) Sys() any { return nil }
@@ -475,7 +493,7 @@ func TestUnsupportedRenameRetainsSourceWithUnstableIdentity(t *testing.T) {
 	source := filepath.Join(root, "source.nsp")
 	destination := filepath.Join(root, "renamed.nsp")
 	writeFixture(t, source, "synthetic unstable identity content")
-	operations := identityChangingOperations(destination, unsupportedRenameTestOperations())
+	operations := identityChangingOperations(destination, crossDeviceDirectCopyTestOperations(source))
 	err := moveFileWithOperations(organizationMoveForTest(t, source, destination), operations)
 	if err == nil || !strings.Contains(err.Error(), "was retained") {
 		t.Errorf("move error = %v, want unverifiable destination retained", err)
@@ -513,7 +531,7 @@ func TestUnsupportedRenameRejectsUnstableIdentityWithDifferentTime(t *testing.T)
 	source := filepath.Join(root, "source.nsp")
 	destination := filepath.Join(root, "renamed.nsp")
 	writeFixture(t, source, "synthetic source")
-	operations := identityChangingOperations(destination, unsupportedRenameTestOperations())
+	operations := identityChangingOperations(destination, crossDeviceDirectCopyTestOperations(source))
 	chtimes := operations.chtimesOpen
 	operations.chtimesOpen = func(file organizationTemporaryFile, atime, mtime time.Time) error {
 		shifted := mtime.Add(time.Hour)

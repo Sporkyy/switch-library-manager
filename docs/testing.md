@@ -199,8 +199,8 @@ There are four scenarios:
 
 | Scenario | What it checks |
 | --- | --- |
-| `library_rename` | A file inside the library is renamed. |
-| `intake_same_mount` | A file in an intake folder on the same mount is imported. |
+| `library_rename` | A file inside the library is renamed without copying its data. |
+| `intake_same_mount` | A file in an intake folder on the same mount is imported without copying its data. |
 | `intake_other_mount` | A file is imported from `SLM_ORGANIZE_TEST_INTAKE_ROOT`. If that's local disk and the library is a share, this is a move across filesystems. |
 | `late_collision` | A file appears at the destination after planning. Both files must survive and an error is logged. |
 

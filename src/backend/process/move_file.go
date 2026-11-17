@@ -29,37 +29,44 @@ type organizationTemporaryFile interface {
 
 type organizationFileOperations struct {
 	renameNoReplace func(string, string) error
-	isCrossDevice   func(error) bool
-	openSource      func(string) (organizationSourceFile, error)
-	createTemp      func(string, string) (organizationTemporaryFile, error)
-	createExclusive func(string) (organizationTemporaryFile, error)
-	lstat           func(string) (os.FileInfo, error)
-	remove          func(string) error
-	chtimes         func(string, time.Time, time.Time) error
-	chtimesOpen     func(organizationTemporaryFile, time.Time, time.Time) error
+	// rename is the platform's ordinary rename, which replaces an existing
+	// destination. It is only used to replace a placeholder the move created.
+	rename            func(string, string) error
+	createPlaceholder func(string) (organizationTemporaryFile, error)
+	isCrossDevice     func(error) bool
+	openSource        func(string) (organizationSourceFile, error)
+	createTemp        func(string, string) (organizationTemporaryFile, error)
+	createExclusive   func(string) (organizationTemporaryFile, error)
+	lstat             func(string) (os.FileInfo, error)
+	remove            func(string) error
+	chtimes           func(string, time.Time, time.Time) error
+	chtimesOpen       func(organizationTemporaryFile, time.Time, time.Time) error
 	// closeExclusive closes an exclusively created copy, always releasing the
 	// handle, and keeps the given times once the server has seen the close.
 	closeExclusive func(organizationTemporaryFile, os.FileInfo, time.Time, time.Time) error
 }
 
 func defaultOrganizationFileOperations() organizationFileOperations {
+	createExclusive := func(path string) (organizationTemporaryFile, error) {
+		return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	}
 	return organizationFileOperations{
-		renameNoReplace: renameNoReplace,
-		isCrossDevice:   isCrossDeviceMoveError,
+		renameNoReplace:   renameNoReplace,
+		rename:            os.Rename,
+		createPlaceholder: createExclusive,
+		isCrossDevice:     isCrossDeviceMoveError,
 		openSource: func(path string) (organizationSourceFile, error) {
 			return os.Open(path)
 		},
 		createTemp: func(directory, pattern string) (organizationTemporaryFile, error) {
 			return os.CreateTemp(directory, pattern)
 		},
-		createExclusive: func(path string) (organizationTemporaryFile, error) {
-			return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-		},
-		lstat:          os.Lstat,
-		remove:         os.Remove,
-		chtimes:        os.Chtimes,
-		chtimesOpen:    setOrganizationOpenFileTimes,
-		closeExclusive: closeExclusiveOrganizationCopy,
+		createExclusive: createExclusive,
+		lstat:           os.Lstat,
+		remove:          os.Remove,
+		chtimes:         os.Chtimes,
+		chtimesOpen:     setOrganizationOpenFileTimes,
+		closeExclusive:  closeExclusiveOrganizationCopy,
 	}
 }
 
@@ -95,7 +102,15 @@ func moveFileWithOperations(move OrganizationMove, operations organizationFileOp
 	case err == nil:
 		return nil
 	case isUnsupportedRenameError(err):
-		zap.S().Infow("Exclusive rename unavailable; copying to an exclusively created destination", "source", move.Source, "destination", move.Destination, "error", err)
+		zap.S().Debugw("Exclusive rename unavailable; renaming over an exclusively created placeholder", "source", move.Source, "destination", move.Destination, "error", err)
+		placeholderErr := renameOverPlaceholder(move, operations)
+		if !errors.Is(placeholderErr, errPlaceholderRenameUnavailable) {
+			return placeholderErr
+		}
+		if operations.isCrossDevice(placeholderErr) {
+			return moveAcrossFileSystems(move, operations)
+		}
+		zap.S().Infow("Exclusive rename unavailable; copying to an exclusively created destination", "source", move.Source, "destination", move.Destination, "error", errors.Join(err, placeholderErr))
 		return copyOrganizationFile(move, operations, true)
 	case operations.isCrossDevice(err):
 		return moveAcrossFileSystems(move, operations)

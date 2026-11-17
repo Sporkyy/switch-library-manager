@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -139,6 +140,15 @@ func TestOrganizeLibraryScratchMount(t *testing.T) {
 			}
 			if err != nil || result.Status != "completed" {
 				t.Fatalf("OrganizeLibrary() status=%q error=%v", result.Status, err)
+			}
+			// A move within one filesystem must rename, never copy the file's
+			// data, including on shares without exclusive rename.
+			if scenario != "intake_other_mount" {
+				for _, entry := range logs.All() {
+					if strings.Contains(entry.Message, "copying") {
+						t.Fatalf("same-filesystem move copied the file: %s %v", entry.Message, entry.ContextMap())
+					}
+				}
 			}
 			if _, err := os.Lstat(source); !os.IsNotExist(err) {
 				t.Fatalf("source remained after successful move: %v", err)

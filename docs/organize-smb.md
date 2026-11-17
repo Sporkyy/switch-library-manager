@@ -38,7 +38,23 @@ A same-path rename can succeed without exercising the failing operation. Finder'
 
 ## Move behavior after this fix
 
-Native exclusive rename remains the fast path where it is supported. If it is unsupported, SLM opens the final destination with `O_CREATE|O_EXCL` and writes through that returned handle. It does not check existence and then use plain rename. Existing destinations, including destinations created after preflight, remain untouched.
+Native exclusive rename remains the fast path where it is supported. If it is unsupported, SLM first tries to rename over a placeholder (next section), which moves the file without copying it. Only if a plain rename is also refused, for example across filesystems, does it copy: it opens the final destination with `O_CREATE|O_EXCL` and writes through that returned handle. Neither path checks existence and then uses plain rename. Existing destinations, including destinations created after preflight, remain untouched.
+
+### Rename over a placeholder
+
+Added November 17, 2026, after a 752-move Organize on `luigi_data3` copied every file through the Mac, including renames within the share: 138.7 GB in 29 minutes. The Synology server stopped responding mid-copy, macOS dropped all three luigi shares, and a 3 MB-short partial copy was left at the destination.
+
+On macOS `smbfs`, and on Linux CIFS where SLM deliberately avoids `RENAME_NOREPLACE`, a move now:
+
+1. Rechecks that the source is unchanged since preflight.
+2. Creates an empty placeholder at the destination with `O_CREATE|O_EXCL`. If anything already has that name, the move stops and nothing changes.
+3. Closes the placeholder and confirms the path is still that empty file (same file ID, zero bytes), then rechecks the source.
+4. Renames the source over the placeholder with the ordinary, replacing rename. The server performs it as one metadata operation, so no file data crosses the network and nothing is ever partially written.
+5. Confirms the destination has the source's size (and file ID, or modification time where IDs change on rename) and that the source name is gone.
+
+The only file the rename can replace is the placeholder this move created. If another client replaced or wrote to it between steps 3 and 4, a window of one round trip, that client's data would be replaced; this is the residual risk compared with a true exclusive rename. If the placeholder cannot be confirmed in step 3, because another client replaced it or the share reports unstable file IDs, it is left in place, the source is kept, and the error names the path. If the rename fails, the placeholder is removed while it is still the move's own empty file. A refused plain rename (unsupported or cross-device) removes the placeholder and falls back to copying. A disconnect between steps 2 and 4 can leave an empty file at the destination; the next Organize reports it as a conflict rather than overwriting it.
+
+Measured on macOS Darwin 24.6.0 with `scripts/test-mounts.sh` against all seven shares (mario_data1–3 and luigi_data1–3 on Synology, peach_data on Samba/UGREEN): in-library renames and same-share intake moves completed with no copy, kept their modification times, and preserved both files on a late collision; only intake moves from another filesystem copied. peach_data assigns a new file ID on rename (the probe's `after rename` reported 10/10), so those moves were confirmed by size and modification time and logged `Moved file has a new file ID after rename`. Linux CIFS has not yet been run with this change.
 
 The fallback flushes and closes the complete copy, verifies the destination and rechecks the source before removing the source. The destination must still identify the file created by this move and have the expected size. Matching size and modification time cannot establish file identity. If the destination was replaced or its identity cannot be verified, the source remains, the unrecognized destination is left untouched, and the error reports both paths. SMB servers with unstable file IDs may therefore leave both copies and report an incomplete move. This conservative check adds no content hashing or full-file readback. Writes and metadata changes use the exclusively created handle, so a replacement at that pathname is not modified. Handle-based timestamps keep nanosecond precision on Linux and Windows; macOS is limited to microseconds.
 
@@ -48,7 +64,7 @@ macOS `smbfs` shows the same loss on some servers. Measured against peach_data (
 
 For a cross-device move, SLM first renames an empty `.slm-probe-*` file in the destination folder. If that exclusive rename is unsupported, the source is copied straight to the exclusively created destination, so the data crosses the network once and no temporary copy is needed. If publication of a temporary copy is still refused, the temporary copy is removed and the original source is copied directly.
 
-The final filename is visible while copying. If copying or verification fails, the source remains. The incomplete destination is removed when the path still identifies the file SLM created; otherwise, such as after a replacement by another client or when file identity cannot be confirmed, it is retained and its path is in the error. Inspect any retained destination before retrying; it will otherwise cause a collision. A disconnect or process termination can still leave a partial destination. This fallback costs a full file copy, even for a rename within one share.
+The final filename is visible while copying. If copying or verification fails, the source remains. The incomplete destination is removed when the path still identifies the file SLM created; otherwise, such as after a replacement by another client or when file identity cannot be confirmed, it is retained and its path is in the error. Inspect any retained destination before retrying; it will otherwise cause a collision. A disconnect or process termination can still leave a partial destination. This fallback costs a full file copy, so it is now used only when the file cannot be renamed, chiefly when the destination is on another filesystem.
 
 Linux kernel CIFS/SMB filesystems deliberately select this exclusive-create path. Current [CIFS rename code](https://github.com/torvalds/linux/blob/master/fs/smb/client/inode.c) does not pass the no-replace flag through to the server operation, and [SMB2 request construction](https://github.com/torvalds/linux/blob/master/fs/smb/client/smb2inode.c) sets `ReplaceIfExists = 1`. Other Linux filesystems retain native `RENAME_NOREPLACE`; unsupported operations can select the fallback. `EINVAL` selects it only when an exclusive rename of a scratch file in the same folder also fails with `EINVAL`, so path-specific errors are reported rather than copied around. If `statfs` fails, SLM still attempts the native rename. The CIFS safeguard does not establish why Organize previously did nothing on CachyOS/KDE.
 
@@ -65,7 +81,8 @@ Restoring it removed unintended whitespace-driven renames. It did not change SMB
 On macOS the application log is `~/Library/Application Support/Switch Library Manager/slm.log`. Look for:
 
 - `Organization plan built`: includes `planned_moves`, `conflicts`, and the rename/import settings. Zero moves means no move syscall was attempted.
-- `Exclusive rename unavailable; copying to an exclusively created destination`, or `Exclusive publication unavailable; copying to an exclusively created destination`: includes paths and the original OS error.
+- `Exclusive rename unavailable; renaming over an exclusively created placeholder` (debug level): the move used the placeholder rename and copied no data.
+- `Exclusive rename unavailable; copying to an exclusively created destination`, or `Exclusive publication unavailable; copying to an exclusively created destination`: includes paths and the original OS error. Within one share these should no longer appear.
 - `Moved file:`: records each completed move.
 - `Organization failed`: includes planned/completed move counts and the error, including the failing operation and paths. Execution still stops at the first failure.
 
