@@ -59,6 +59,48 @@ func TestResolveGameTitleName(t *testing.T) {
 			want:   "test",
 		},
 		{
+			name:   "English alias ending a CJK database title wins over the filename",
+			remote: &SwitchTitle{Attributes: TitleAttributes{Name: "중장기병 레이노스2 새턴 트리뷰트 (Assault Suit Leynos 2 Saturn Tribute)"}},
+			local:  titleNameBase("", "", "reinosu 2 sata ntorivuto reinosu 2 sata ntorivuto [0100C4801DAEC000][v0].nsp"),
+			want:   "Assault Suit Leynos 2 Saturn Tribute",
+		},
+		{
+			name:   "English alias in full-width parentheses is used",
+			remote: &SwitchTitle{Attributes: TitleAttributes{Name: "ダッジハード（DODGE HARD）"}},
+			local:  titleNameBase("", "", "dodge.nsp"),
+			want:   "DODGE HARD",
+		},
+		{
+			name:   "embedded English wins over an English alias",
+			remote: &SwitchTitle{Attributes: TitleAttributes{Name: "울프팽 새턴 트리뷰트 부스티드(Wolf Fang/Skull Fang SATURN Tribute Boosted)"}},
+			local:  titleNameBase("WolfFang SkullFang Saturn Tribute Boosted", "", "wolf.nsp"),
+			want:   "WolfFang SkullFang Saturn Tribute Boosted",
+		},
+		{
+			name:   "parentheses before the end of a CJK title are not an alias",
+			remote: &SwitchTitle{Attributes: TitleAttributes{Name: "応援曲：（DeNA）「勇者の遺伝子」"}},
+			local:  titleNameBase("", "", "cheer.nsp"),
+			want:   "cheer",
+		},
+		{
+			name:   "a trailing group that contains CJK is not an alias",
+			remote: &SwitchTitle{Attributes: TitleAttributes{Name: "METAL GEAR SOLID 4 GUNS OF THE PATRIOTS (MASTER COLLECTION版)"}},
+			local:  titleNameBase("", "", "mgs4.nsp"),
+			want:   "mgs4",
+		},
+		{
+			name:   "a trailing Cyrillic group is not an English alias",
+			remote: &SwitchTitle{Attributes: TitleAttributes{Name: "ダッジハード (Русский)"}},
+			local:  titleNameBase("", "", "dodge.nsp"),
+			want:   "dodge",
+		},
+		{
+			name:   "mismatched parentheses do not form an alias",
+			remote: &SwitchTitle{Attributes: TitleAttributes{Name: "ダッジハード（DODGE HARD)"}},
+			local:  titleNameBase("", "", "dodge.nsp"),
+			want:   "dodge",
+		},
+		{
 			name:   "update filename wins over a Japanese database title",
 			remote: japanese,
 			local:  titleNameUpdates(map[int]SwitchFileInfo{1: titleNameFile("01.nsp", "", "")}),
@@ -115,7 +157,7 @@ func TestResolveGameTitleName(t *testing.T) {
 }
 
 func TestResolveGameTitleNameAllowsUnicodeCatalogTitles(t *testing.T) {
-	for _, name := range []string{"日本語", "한국어", "中文", "åäö 🎮"} {
+	for _, name := range []string{"日本語", "한국어", "中文", "åäö 🎮", "ダッジハード（DODGE HARD）"} {
 		t.Run(name, func(t *testing.T) {
 			remote := &SwitchTitle{Attributes: TitleAttributes{Name: "  " + name + "  "}}
 			local := titleNameBase("Embedded English", "British English", "Filename.nsp")

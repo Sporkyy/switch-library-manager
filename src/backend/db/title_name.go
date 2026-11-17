@@ -42,6 +42,14 @@ func ResolveGameTitleName(remote *SwitchTitle, local *SwitchGameFiles, allowUnic
 		}
 	}
 
+	// A CJK catalog title often ends with the English title in parentheses,
+	// which is curated, unlike a filename that earlier runs may have mangled.
+	if remote != nil {
+		if name := englishAliasOfCJKTitle(remote.Attributes.Name); name != "" {
+			return name
+		}
+	}
+
 	if local != nil {
 		if local.BaseExist {
 			if name := ParseTitleNameFromFileName(local.File.ExtendedInfo.FileName); name != "" {
@@ -77,6 +85,41 @@ func ResolveGameTitleName(remote *SwitchTitle, local *SwitchGameFiles, allowUnic
 	}
 
 	return "Unknown Title"
+}
+
+// englishAliasOfCJKTitle returns the final parenthesized group of a CJK
+// title, such as "Assault Suit Leynos 2 Saturn Tribute" in
+// "중장기병 레이노스2 새턴 트리뷰트 (Assault Suit Leynos 2 Saturn Tribute)", when
+// that group ends the title and contains Latin letters but no CJK.
+func englishAliasOfCJKTitle(title string) string {
+	title = strings.TrimSpace(title)
+	if !containsCJK(title) {
+		return ""
+	}
+	opening, closing := "(", ")"
+	if strings.HasSuffix(title, "）") {
+		opening, closing = "（", "）"
+	}
+	body, found := strings.CutSuffix(title, closing)
+	if !found {
+		return ""
+	}
+	open := strings.LastIndexAny(body, "(（")
+	if open <= 0 {
+		return ""
+	}
+	group, matched := strings.CutPrefix(body[open:], opening)
+	if !matched {
+		return ""
+	}
+	alias := strings.TrimSpace(group)
+	hasLatinLetter := strings.ContainsFunc(alias, func(r rune) bool {
+		return unicode.Is(unicode.Latin, r) && unicode.IsLetter(r)
+	})
+	if !hasLatinLetter || containsCJK(alias) || strings.ContainsAny(alias, "()（）") {
+		return ""
+	}
+	return alias
 }
 
 func embeddedEnglishTitle(file SwitchFileInfo) string {
