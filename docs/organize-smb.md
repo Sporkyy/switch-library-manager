@@ -38,7 +38,7 @@ A same-path rename can succeed without exercising the failing operation. Finder'
 
 ## Move behavior after this fix
 
-Native exclusive rename remains the fast path where it is supported. If it is unsupported, SLM first tries to rename over a placeholder (next section), which moves the file without copying it. Only if a plain rename is also refused, for example across filesystems, does it copy: it opens the final destination with `O_CREATE|O_EXCL` and writes through that returned handle. Neither path checks existence and then uses plain rename. Existing destinations, including destinations created after preflight, remain untouched.
+Native exclusive rename remains the fast path where it is supported. If it is unsupported, SLM first claims the destination by creating a placeholder and tries to rename over it. If plain rename is also unsupported or crosses filesystems, SLM falls back to copying. For a destination that lacks exclusive rename, the copy writes through a handle opened with `O_CREATE|O_EXCL`. Exclusive creation rejects files that occupy the destination when SLM claims it.
 
 ### Rename over a placeholder
 
@@ -48,11 +48,11 @@ On macOS `smbfs`, and on Linux CIFS where SLM deliberately avoids `RENAME_NOREPL
 
 1. Rechecks that the source is unchanged since preflight.
 2. Creates an empty placeholder at the destination with `O_CREATE|O_EXCL`. If anything already has that name, the move stops and nothing changes.
-3. Closes the placeholder and confirms the path is still that empty file (same file ID, zero bytes), then rechecks the source.
+3. Closes the placeholder, rechecks the source, and confirms the destination is still that empty file (same file ID, zero bytes).
 4. Renames the source over the placeholder with the ordinary, replacing rename. The server performs it as one metadata operation, so no file data crosses the network and nothing is ever partially written.
 5. Confirms the destination has the source's size (and file ID, or modification time where IDs change on rename) and that the source name is gone.
 
-The only file the rename can replace is the placeholder this move created. If another client replaced or wrote to it between steps 3 and 4, a window of one round trip, that client's data would be replaced; this is the residual risk compared with a true exclusive rename. If the placeholder cannot be confirmed in step 3, because another client replaced it or the share reports unstable file IDs, it is left in place, the source is kept, and the error names the path. If the rename fails, the placeholder is removed while it is still the move's own empty file. A refused plain rename (unsupported or cross-device) removes the placeholder and falls back to copying. A disconnect between steps 2 and 4 can leave an empty file at the destination; the next Organize reports it as a conflict rather than overwriting it.
+The final placeholder check and the rename are separate operations. A write or replacement by another client between them can still be overwritten. If SLM cannot confirm the placeholder in step 3, it leaves the destination and source in place and reports the path. If the rename fails, SLM checks that the placeholder is still its own empty file before removing it. An unsupported or cross-device rename falls back to copying after placeholder cleanup. A disconnect between steps 2 and 4 can leave an empty file at the destination. The next Organize reports that file as a conflict.
 
 Measured on macOS Darwin 24.6.0 with `scripts/test-mounts.sh` against all seven shares (mario_data1–3 and luigi_data1–3 on Synology, peach_data on Samba/UGREEN): in-library renames and same-share intake moves completed with no copy, kept their modification times, and preserved both files on a late collision; only intake moves from another filesystem copied. peach_data assigns a new file ID on rename (the probe's `after rename` reported 10/10), so those moves were confirmed by size and modification time and logged `Moved file has a new file ID after rename`. Linux CIFS has not yet been run with this change.
 

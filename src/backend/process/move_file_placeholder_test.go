@@ -146,6 +146,30 @@ func TestPlaceholderRenameRejectsSourceChangedAfterPlanning(t *testing.T) {
 	assertNotExists(t, destination)
 }
 
+func TestPlaceholderRenameRechecksDestinationAfterSource(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source.nsp")
+	destination := filepath.Join(root, "renamed.nsp")
+	writeFixture(t, source, "synthetic source")
+	move := organizationMoveForTest(t, source, destination)
+	operations := placeholderTestOperations(t)
+	sourceChecks := 0
+	operations.lstat = func(path string) (os.FileInfo, error) {
+		if path == source {
+			sourceChecks++
+			if sourceChecks == 2 {
+				writeFixture(t, destination, "another client's file")
+			}
+		}
+		return os.Lstat(path)
+	}
+	if err := moveFileWithOperations(move, operations); err == nil {
+		t.Fatal("move replaced a destination written during the source check")
+	}
+	assertUnsupportedTestContents(t, source, "synthetic source")
+	assertUnsupportedTestContents(t, destination, "another client's file")
+}
+
 // A plain rename that fails for an ordinary reason removes the placeholder,
 // keeps the source, and does not fall back to copying the file.
 func TestPlaceholderRenameFailureRemovesPlaceholder(t *testing.T) {

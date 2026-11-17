@@ -22,9 +22,9 @@ var errPlaceholderRenameUnavailable = errors.New("rename over placeholder is una
 // replacing rename. On a network share the server performs the rename, so no
 // file data crosses the network and nothing is partially written.
 //
-// The only file the rename can replace is the empty placeholder, checked
-// immediately before the rename to still be the file this move created. If
-// another client replaced or wrote to it, the move stops and keeps both files.
+// The move checks the placeholder immediately before the rename and stops
+// if it finds that the placeholder has changed. The check and replacing
+// rename are separate operations.
 func renameOverPlaceholder(move OrganizationMove, operations organizationFileOperations) error {
 	if err := verifyMoveSourcePath(move, operations.lstat); err != nil {
 		return err
@@ -44,15 +44,15 @@ func renameOverPlaceholder(move OrganizationMove, operations organizationFileOpe
 	if closeErr != nil {
 		return discardPlaceholder(move, created, operations, fmt.Errorf("close placeholder: %w", closeErr))
 	}
+	if err := verifyMoveSourcePath(move, operations.lstat); err != nil {
+		return discardPlaceholder(move, created, operations, err)
+	}
 	current, err := operations.lstat(move.Destination)
 	if err != nil {
 		return discardPlaceholder(move, created, operations, fmt.Errorf("inspect placeholder: %w", err))
 	}
 	if !isOwnPlaceholder(created, current) {
 		return fmt.Errorf("destination %q could not be confirmed as this move's empty placeholder and was retained; source %q was not moved (another client replaced or wrote to it, or the share has unstable file IDs)", move.Destination, move.Source)
-	}
-	if err := verifyMoveSourcePath(move, operations.lstat); err != nil {
-		return discardPlaceholder(move, created, operations, err)
 	}
 	if err := operations.rename(move.Source, move.Destination); err != nil {
 		renameErr := fmt.Errorf("rename %q over placeholder %q: %w", move.Source, move.Destination, err)
