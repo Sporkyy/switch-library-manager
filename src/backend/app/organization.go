@@ -79,8 +79,6 @@ func (a *App) OrganizeLibrary() (OrganizationResult, error) {
 	changed := false
 	switch {
 	case organizationEnabled:
-		// The plan deletes its cleanup files before moving, so a file is never
-		// both deleted and moved.
 		if len(plan.Moves) != 0 || len(plan.Cleanup) != 0 {
 			changed = true
 			returnErr = process.ExecuteOrganizationPlan(plan, localDB, settingsObj.Paths.LibraryFolder, settingsObj.Organization, progress, settingsObj.Paths.ScanFolders...)

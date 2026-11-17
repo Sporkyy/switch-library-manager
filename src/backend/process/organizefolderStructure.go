@@ -72,14 +72,14 @@ func deleteCleanupCandidates(candidates []db.CleanupCandidate, localDB *db.Local
 		if err != nil {
 			return removed, fmt.Errorf("verify cleanup candidate %q: %w", source, err)
 		}
-		if !sourceInfo.Mode().IsRegular() || sourceInfo.Size() != candidate.File.Size || !sourceInfo.ModTime().Equal(candidate.File.ModTime) {
+		if !matchesScannedCleanupFile(sourceInfo, candidate.File) {
 			return removed, fmt.Errorf("cleanup candidate %q changed after scanning", source)
 		}
 		replacementInfo, err := os.Lstat(replacement)
 		if err != nil {
 			return removed, fmt.Errorf("verify replacement %q for %q: %w", replacement, source, err)
 		}
-		if !replacementInfo.Mode().IsRegular() || replacementInfo.Size() != candidate.Replacement.Size || !replacementInfo.ModTime().Equal(candidate.Replacement.ModTime) {
+		if !matchesScannedCleanupFile(replacementInfo, candidate.Replacement) {
 			return removed, fmt.Errorf("replacement %q for cleanup candidate %q changed after scanning", replacement, source)
 		}
 		if os.SameFile(sourceInfo, replacementInfo) {
@@ -102,6 +102,10 @@ func deleteCleanupCandidates(candidates []db.CleanupCandidate, localDB *db.Local
 		)
 	}
 	return removed, nil
+}
+
+func matchesScannedCleanupFile(info os.FileInfo, scanned db.ExtendedFileInfo) bool {
+	return info.Mode().IsRegular() && info.Size() == scanned.Size && info.ModTime().Equal(scanned.ModTime)
 }
 
 func cleanupReasonText(reasonCode int) string {

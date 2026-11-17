@@ -208,11 +208,9 @@ func (c *Console) Start() {
 	if canMutate && destructiveEnabled {
 		operationErr := error(nil)
 		if organizationEnabled {
-			// The plan deletes its cleanup files before moving, so a file is
-			// never both deleted and moved.
 			progressBar = progressbar.New(2000)
 			if len(organizationPlan.Cleanup) != 0 {
-				fmt.Printf("\nDeleting %d verified duplicate and old file(s), then organizing the library\n", len(organizationPlan.Cleanup))
+				fmt.Printf("\nStarting library organization with %d verified duplicate and old file(s) marked for cleanup\n", len(organizationPlan.Cleanup))
 			} else {
 				fmt.Printf("\nStarting library organization\n")
 			}

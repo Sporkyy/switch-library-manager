@@ -1,6 +1,7 @@
 package process
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,10 +129,43 @@ func TestBuildOrganizationPlanKeepsLibraryFileWhenReplacementIsNotImported(t *te
 	// Once the game is processed, the newer update is imported, so the older
 	// library copy can go.
 	options.ProcessWhenMissingBaseGame = true
+	sameNameOptions := options
+	sameNameOptions.FileNameTemplate = "{TITLE_NAME}"
+	titles := &db.SwitchTitlesDB{TitlesMap: map[string]*db.SwitchTitle{
+		"0100000000010": {Attributes: db.TitleAttributes{Name: "old"}},
+	}}
+	blocked, err := BuildOrganizationPlan(library, local, titles, sameNameOptions)
+	if err != nil || len(blocked.Conflicts) != 1 || blocked.Conflicts[0].Destination != oldPath {
+		t.Fatalf("plan conflicts=%v error=%v; want a conflict at the older library copy", blocked.Conflicts, err)
+	}
+	if err := ExecuteOrganizationPlan(blocked, local, library, sameNameOptions, nil); err == nil {
+		t.Fatal("ExecuteOrganizationPlan() accepted an import that would need to delete its predecessor first")
+	}
+	assertExists(t, oldPath)
+	assertExists(t, newPath)
+
 	plan, err = BuildOrganizationPlan(library, local, nil, options)
 	if err != nil || len(plan.Conflicts) != 0 || len(plan.Moves) != 1 || plan.Moves[0].Source != newPath || len(plan.Cleanup) != 1 {
 		t.Fatalf("plan moves=%v cleanup=%v conflicts=%v error=%v; want the old update deleted and the new one imported", plan.Moves, plan.Cleanup, plan.Conflicts, err)
 	}
+	destination := plan.Moves[0].Destination
+	writeFixture(t, destination, "late arrival")
+	if err := ExecuteOrganizationPlan(plan, local, library, options, nil); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("ExecuteOrganizationPlan() = %v, want a late destination collision", err)
+	}
+	assertUnsupportedTestContents(t, oldPath, "old")
+	assertUnsupportedTestContents(t, newPath, "new")
+	assertUnsupportedTestContents(t, destination, "late arrival")
+
+	if err := os.Remove(destination); err != nil {
+		t.Fatal(err)
+	}
+	if err := ExecuteOrganizationPlan(plan, local, library, options, nil); err != nil {
+		t.Fatalf("retrying ExecuteOrganizationPlan() = %v", err)
+	}
+	assertNotExists(t, oldPath)
+	assertNotExists(t, newPath)
+	assertUnsupportedTestContents(t, destination, "new")
 }
 
 // Three copies of one base file: the scan keeps "a.nsp", but "Game.nsp"
