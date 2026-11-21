@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -235,5 +236,60 @@ func TestBuildLocalLibraryDataFallsBackToBaseDisplayVersion(t *testing.T) {
 				t.Errorf("version = %q, want %q", got, test.wantVersion)
 			}
 		})
+	}
+}
+
+func TestBuildLocalLibraryDataSortsIssuesByTypeThenPath(t *testing.T) {
+	localDB := &db.LocalSwitchFilesDB{
+		TitlesMap: map[string]*db.SwitchGameFiles{
+			"0100000000020": {
+				Updates: map[int]db.SwitchFileInfo{
+					2: {ExtendedInfo: db.ExtendedFileInfo{BaseFolder: "/lib/b", FileName: "B Update.nsp"}},
+				},
+				Dlc: map[string]db.SwitchFileInfo{
+					"0100000000020001": {ExtendedInfo: db.ExtendedFileInfo{BaseFolder: "/lib/a", FileName: "A DLC.nsp"}},
+				},
+			},
+			"0100000000010": {
+				Updates: map[int]db.SwitchFileInfo{
+					2: {ExtendedInfo: db.ExtendedFileInfo{BaseFolder: "/lib/c", FileName: "C Update.nsp"}},
+				},
+			},
+		},
+		Skipped: map[db.ExtendedFileInfo]db.SkippedFile{
+			{BaseFolder: "/lib/z", FileName: "notes.txt"}:   {ReasonCode: db.REASON_UNSUPPORTED_TYPE, ReasonText: "file type is not supported"},
+			{BaseFolder: "/lib/a", FileName: "readme.txt"}:  {ReasonCode: db.REASON_UNSUPPORTED_TYPE, ReasonText: "file type is not supported"},
+			{BaseFolder: "/lib/y", FileName: "Dup.nsp"}:     {ReasonCode: db.REASON_DUPLICATE, ReasonText: "duplicate base file\n/lib/a/Orig.nsp\n/lib/y/Dup.nsp"},
+			{BaseFolder: "/lib/b", FileName: "Dup.nsp"}:     {ReasonCode: db.REASON_DUPLICATE, ReasonText: "duplicate DLC file\n/lib/z/Orig.nsp\n/lib/b/Dup.nsp"},
+			{BaseFolder: "/lib/x", FileName: "Old.nsp"}:     {ReasonCode: db.REASON_OLD_UPDATE, ReasonText: "old update file, newer update exist locally"},
+			{BaseFolder: "/lib/w", FileName: "Broken.nsp"}:  {ReasonCode: db.REASON_MALFORMED_FILE, ReasonText: "failed to read NSP"},
+			{BaseFolder: "/lib/v", FileName: "Unknown.nsp"}: {ReasonCode: db.REASON_UNRECOGNISED, ReasonText: "unable to determine title-Id / version"},
+		},
+	}
+
+	wantPaths := []string{
+		filepath.Join("/lib/a", "A DLC.nsp"),
+		filepath.Join("/lib/b", "B Update.nsp"),
+		filepath.Join("/lib/c", "C Update.nsp"),
+		filepath.Join("/lib/b", "Dup.nsp"),
+		filepath.Join("/lib/y", "Dup.nsp"),
+		filepath.Join("/lib/x", "Old.nsp"),
+		filepath.Join("/lib/w", "Broken.nsp"),
+		filepath.Join("/lib/v", "Unknown.nsp"),
+		filepath.Join("/lib/a", "readme.txt"),
+		filepath.Join("/lib/z", "notes.txt"),
+	}
+
+	// Map iteration order is randomized, so repeat to catch order that only
+	// looks sorted by chance.
+	for attempt := 0; attempt < 20; attempt++ {
+		got := buildLocalLibraryData(localDB, &db.SwitchTitlesDB{TitlesMap: map[string]*db.SwitchTitle{}}, false)
+		gotPaths := make([]string, 0, len(got.Issues))
+		for _, issue := range got.Issues {
+			gotPaths = append(gotPaths, issue.Key)
+		}
+		if !reflect.DeepEqual(gotPaths, wantPaths) {
+			t.Fatalf("issue order = %q, want %q", gotPaths, wantPaths)
+		}
 	}
 }

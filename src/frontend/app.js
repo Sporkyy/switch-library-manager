@@ -803,7 +803,7 @@ $(function () {
                     createTable("#updates-table", gameDetailsTableOptions({
                         layout:"fitDataStretch",
                         initialSort:[
-                            {column:"latest_update_date", dir:"desc"}, //sort by this first
+                            {column:"Attributes.name", dir:"asc"}, //sort by this first
                         ],
                         data: state.updates,
                         columns: [
@@ -857,7 +857,6 @@ $(function () {
                         layout:"fitDataStretch",
                         sortOrderReverse:true,
                         initialSort:[
-                            {column:"dlc.release_date", dir:"desc"},
                             {column:"game.name", dir:"asc"},
                             {column:"dlc.name", dir:"asc"},
                             {column:"dlc.id", dir:"asc"},
